@@ -4,9 +4,9 @@
 #include <string.h>
 #include <assert.h>
 
-typedef uint16_t CursorLocation;
+typedef uint16_t ClusterLocation;
 typedef uint16_t MetaFileSize;
-typedef uint64_t FileSize;
+typedef uint64_t FileCursor;
 
 typedef uint8_t Result;
 typedef uint8_t OptionalResult;
@@ -14,13 +14,13 @@ typedef uint8_t OptionalResult;
 enum {
 	CLUSTER_SIZE = 4*1024,
 	MAX_CLUSTERS = 2048,
-	TABLE_SIZE = MAX_CLUSTERS*sizeof(CursorLocation),
+	TABLE_SIZE = MAX_CLUSTERS*sizeof(ClusterLocation),
 	ROOT_OFFSET = TABLE_SIZE,
 	
 	FILE_META = 64,
 	OFFSET_SIZE = 0,
 	OFFSET_CLUSTER = sizeof(MetaFileSize),
-	OFFSET_NAME = sizeof(MetaFileSize) + sizeof(CursorLocation),
+	OFFSET_NAME = sizeof(MetaFileSize) + sizeof(ClusterLocation),
 	MAX_FILE_NAME = FILE_META - OFFSET_NAME,
 	FILES_PER_CLUSTER = CLUSTER_SIZE / FILE_META,
 
@@ -36,7 +36,7 @@ enum {
 };
 
 _STATIC_ASSERT(sizeof(uint8_t) == 1);
-_STATIC_ASSERT(sizeof(CursorLocation) % sizeof(uint8_t) == 0);
+_STATIC_ASSERT(sizeof(ClusterLocation) % sizeof(uint8_t) == 0);
 _STATIC_ASSERT(TABLE_SIZE % CLUSTER_SIZE == 0);
 _STATIC_ASSERT(CLUSTER_SIZE % FILE_META == 0);
 _STATIC_ASSERT(FILES_PER_CLUSTER < UINT8_MAX);
@@ -46,26 +46,89 @@ _STATIC_ASSERT(MAX_CLUSTERS < UINT16_MAX);
 typedef struct {
 	FILE* file;
 	uint16_t clusters_count;
-	CursorLocation table_cache[TABLE_SIZE];
+	ClusterLocation table_cache[TABLE_SIZE];
 } FileSystem;
 
 typedef struct {
-	CursorLocation current_cluster;
+	ClusterLocation current_cluster;
 } DirCursor;
 
 typedef struct {
-	CursorLocation current_cluster;
+	ClusterLocation current_cluster;
 	uint8_t meta[FILE_META];
 } DirEntry;
 
 typedef struct {
-	CursorLocation current_cluster;
-} FileCursor;
-
-typedef struct {
-	CursorLocation current_cluster;
+	ClusterLocation current_cluster;
 	uint8_t next_folder;
 } DirIter;
+
+void read(FileSystem* restrict fs, ClusterLocation cluster, uint8_t* restrict buffer) {
+	fseek(fs->file, ROOT_OFFSET + cluster * CLUSTER_SIZE, SEEK_SET);
+	fread(buffer, 1, CLUSTER_SIZE, fs->file);
+}
+
+void write(FileSystem* restrict fs, ClusterLocation cluster, uint8_t* restrict buffer) {
+	fseek(fs->file, ROOT_OFFSET + cluster * CLUSTER_SIZE, SEEK_SET);
+	fwrite(buffer, 1, CLUSTER_SIZE, fs->file);
+}
+
+uint16_t read_u16(uint8_t* restrict ptr) {
+	return ptr[0] | ptr[1] << 8;
+}
+
+void write_u16(uint8_t* restrict ptr, uint16_t value) {
+	ptr[0] = value;
+	ptr[1] = value >> 8;
+}
+
+ClusterLocation get_cluster(DirEntry* restrict entry) {
+	return read_u16(entry->meta + OFFSET_CLUSTER);
+}
+
+MetaFileSize get_meta_size(DirEntry* restrict entry) {
+	return read_u16(entry->meta + OFFSET_SIZE);
+}
+
+uint8_t is_folder(DirEntry* restrict entry) {
+	return get_meta_size(entry) == FS_FOLDER;
+}
+
+FileCursor get_file_size(FileSystem* restrict fs, DirEntry* restrict entry) {
+	FileCursor ret = (FileCursor) get_meta_size(entry);
+	ClusterLocation cluster = entry->current_cluster;
+	while(fs->table_cache[cluster] != TV_FINAL) {
+		cluster = fs->table_cache[cluster];
+		ret += cluster;
+	}
+	return ret;
+}
+
+// TODO: name должен быть padded
+void init_meta(DirEntry* restrict entry, uint8_t is_folder, uint8_t* restrict name) {
+	write_u16(entry->meta + OFFSET_SIZE, is_folder ? FS_FOLDER : 0);
+	memcpy(entry->meta + OFFSET_NAME, name, MAX_FILE_NAME);
+}
+
+ClusterLocation allocate(FileSystem* restrict fs) {
+	for(size_t i = 1; i != TABLE_SIZE; i++) {
+		if (fs->table_cache[i] == 0) {
+			fs->table_cache[i] = TV_FINAL;
+			return i;
+		}
+	}
+	return TV_CANT_ALLOC;
+}
+
+Result extend(FileSystem* restrict fs, ClusterLocation* restrict cursor) {
+	ClusterLocation nc = allocate(fs);
+	if(nc == TV_CANT_ALLOC) {
+		return 1;
+	}
+	fs->table_cache[*cursor] = nc;
+	*cursor = nc;
+	return 0;
+}
 
 Result init_fs_file(FileSystem* restrict fs, char* restrict path, uint16_t clusters_count) {
 	if(clusters_count == 0) {
@@ -110,7 +173,7 @@ Result open_fs_file(FileSystem* restrict fs, char* restrict path) {
 	fs->clusters_count = max(UINT16_MAX, (file_length - ROOT_OFFSET) / CLUSTER_SIZE);
 
 	rewind(fs->file);
-	fread(fs->table_cache, sizeof(CursorLocation), MAX_CLUSTERS, fs->file);
+	fread(fs->table_cache, sizeof(ClusterLocation), MAX_CLUSTERS, fs->file);
 
 	return ferror(fs->file);
 }
@@ -143,37 +206,6 @@ OptionalResult resolve(FileSystem* restrict fs, DirCursor* restrict current, Dir
 	}
 }
 
-CursorLocation allocate(FileSystem* restrict fs) {
-	for(size_t i = 1; i != TABLE_SIZE; i++) {
-		if (fs->table_cache[i] == 0) {
-			fs->table_cache[i] = TV_FINAL;
-			return i;
-		}
-	}
-	return TV_CANT_ALLOC;
-}
-
-Result extend(FileSystem* restrict fs, CursorLocation* restrict cursor) {
-	CursorLocation nc = allocate(fs);
-	if(nc == TV_CANT_ALLOC) {
-		return 1;
-	}
-	fs->table_cache[*cursor] = nc;
-	*cursor = nc;
-	return 0;
-}
-
-void read(FileSystem* restrict fs, CursorLocation cluster, uint8_t* restrict buffer) {
-	fseek(fs->file, ROOT_OFFSET + cluster * CLUSTER_SIZE, SEEK_SET);
-	fread(buffer, 1, CLUSTER_SIZE, fs->file);
-}
-
-void write(FileSystem* restrict fs, CursorLocation cluster, uint8_t* restrict buffer) {
-	fseek(fs->file, ROOT_OFFSET + cluster * CLUSTER_SIZE, SEEK_SET);
-	fwrite(buffer, 1, CLUSTER_SIZE, fs->file);
-}
-
-// TODO: restrict: а если target из dir?
 OptionalResult create_file(FileSystem* restrict fs, DirCursor* restrict current, DirEntry* restrict target) {
 	uint8_t buffer[CLUSTER_SIZE];
 	target->current_cluster = current->current_cluster;
@@ -185,7 +217,7 @@ OptionalResult create_file(FileSystem* restrict fs, DirCursor* restrict current,
 		size_t offset = 0;
 		while(1) {
 			if (buffer[offset+OFFSET_NAME] == 0) { // Empty file name
-				CursorLocation first_cluster = allocate(fs);
+				ClusterLocation first_cluster = allocate(fs);
 				if(first_cluster == TV_CANT_ALLOC) {
 					return OPTIONAL_STRUCTURE_ERROR;
 				}
@@ -220,41 +252,9 @@ OptionalResult create_file(FileSystem* restrict fs, DirCursor* restrict current,
 	}
 }
 
-uint16_t read_u16(uint8_t* restrict ptr) {
-	return ptr[0] | ptr[1] << 8;
-}
-
-void write_u16(uint8_t* restrict ptr, uint16_t value) {
-	ptr[0] = value;
-	ptr[1] = value >> 8;
-}
-
-CursorLocation get_cluster(DirEntry* restrict entry) {
-	return read_u16(entry->meta + OFFSET_CLUSTER);
-}
-
-MetaFileSize get_meta_size(DirEntry* restrict entry) {
-	return read_u16(entry->meta + OFFSET_SIZE);
-}
-
-// TODO: name должен быть padded
-void init_meta(DirEntry* restrict entry, uint8_t is_folder, uint8_t* restrict name) {
-	write_u16(entry->meta + OFFSET_SIZE, is_folder ? FS_FOLDER : 0);
-	memcpy(entry->meta + OFFSET_NAME, name, MAX_FILE_NAME);
-}
-
-uint64_t get_file_size(FileSystem* restrict fs, DirEntry* restrict entry) {
-	FileSize ret = get_meta_size(entry);
-	CursorLocation cluster = entry->current_cluster;
-	while(fs->table_cache[cluster] != TV_FINAL) {
-		cluster = fs->table_cache[cluster];
-		ret += cluster;
-	}
-	return ret;
-}
-
-uint8_t is_folder(DirEntry* restrict entry) {
-	return get_meta_size(entry) == FS_FOLDER;
+// TODO: restrict buffer?
+void write_to_file(FileSystem* restrict fs, DirEntry* restrict file, FileCursor location, uint8_t* restrict buffer, size_t size) {
+	
 }
 
 /*
