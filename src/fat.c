@@ -6,7 +6,7 @@
 
 typedef uint16_t ClusterLocation;
 typedef uint16_t MetaFileSize;
-typedef uint64_t FileCursor;
+typedef uint32_t FileCursor;
 
 typedef uint8_t Result;
 typedef uint8_t OptionalResult;
@@ -202,6 +202,9 @@ OptionalResult resolve(FileSystem* restrict fs, DirCursor* restrict current, Dir
 			}
 			offset += FILE_META;
 		}
+		if(fs->table_cache[result->current_cluster] == TV_FINAL) {
+			return OPTIONAL_STRUCTURE_ERROR;
+		}
 		result->current_cluster = fs->table_cache[result->current_cluster];
 	}
 }
@@ -252,9 +255,22 @@ OptionalResult create_file(FileSystem* restrict fs, DirCursor* restrict current,
 	}
 }
 
+typedef struct {
+	FileCursor cursor;
+	FileCursor length;
+} FileIO;
+
 // TODO: restrict buffer?
-void write_to_file(FileSystem* restrict fs, DirEntry* restrict file, FileCursor location, uint8_t* restrict buffer, size_t size) {
+void write_to_file(FileSystem* restrict fs, FileIO* restrict file, FileCursor location, uint8_t* restrict buffer, size_t size) {
 	
+}
+
+// TODO: restrict buffer?
+void read_from(FileSystem* restrict fs, FileIO* restrict file, FileCursor location, uint8_t* restrict buffer, size_t size) {
+	while(size != 0) {
+		
+		fread();
+	}
 }
 
 /*
