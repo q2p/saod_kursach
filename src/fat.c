@@ -5,7 +5,7 @@
 #include <assert.h>
 
 typedef uint16_t ClusterLocation;
-typedef uint16_t MetaFileSize;
+typedef uint16_t ClusterOffset;
 typedef uint32_t FileCursor;
 
 typedef uint8_t Result;
@@ -19,8 +19,8 @@ enum {
 	
 	FILE_META = 64,
 	OFFSET_SIZE = 0,
-	OFFSET_CLUSTER = sizeof(MetaFileSize),
-	OFFSET_NAME = sizeof(MetaFileSize) + sizeof(ClusterLocation),
+	OFFSET_CLUSTER = sizeof(ClusterOffset),
+	OFFSET_NAME = sizeof(ClusterOffset) + sizeof(ClusterLocation),
 	MAX_FILE_NAME = FILE_META - OFFSET_NAME,
 	FILES_PER_CLUSTER = CLUSTER_SIZE / FILE_META,
 
@@ -86,7 +86,7 @@ ClusterLocation get_cluster(DirEntry* restrict entry) {
 	return read_u16(entry->meta + OFFSET_CLUSTER);
 }
 
-MetaFileSize get_meta_size(DirEntry* restrict entry) {
+ClusterOffset get_meta_size(DirEntry* restrict entry) {
 	return read_u16(entry->meta + OFFSET_SIZE);
 }
 
@@ -121,6 +121,8 @@ ClusterLocation allocate(FileSystem* restrict fs) {
 }
 
 Result extend(FileSystem* restrict fs, ClusterLocation* restrict cursor) {
+	assert(fs->table_cache[*cursor] == TV_FINAL);
+
 	ClusterLocation nc = allocate(fs);
 	if(nc == TV_CANT_ALLOC) {
 		return 1;
@@ -256,20 +258,72 @@ OptionalResult create_file(FileSystem* restrict fs, DirCursor* restrict current,
 }
 
 typedef struct {
-	FileCursor cursor;
-	FileCursor length;
+	ClusterOffset metaFileSize;
+	ClusterOffset offset;
+	ClusterLocation first;
+	ClusterLocation current;
 } FileIO;
 
 // TODO: restrict buffer?
 void write_to_file(FileSystem* restrict fs, FileIO* restrict file, FileCursor location, uint8_t* restrict buffer, size_t size) {
-	
+	while(size != 0) {
+		ClusterOffset left = CLUSTER_SIZE - file->offset;
+		ClusterOffset to_write = min(size, left);
+		fseek(fs->file, ROOT_OFFSET + file->current * CLUSTER_SIZE + file->offset, SEEK_SET);
+		fread(buffer, 1, to_write, fs->file);
+		file->offset = (file->offset + to_write) % CLUSTER_SIZE;
+		buffer += to_write;
+		size -= to_write;
+		if(to_write == left) {
+			// Выделять память под следующий блок, даже если нечего записывать
+			if(fs->table_cache[file->current] == TV_FINAL) {
+				if(extend(fs, &file->current)) {
+					return OPTIONAL_STRUCTURE_ERROR;
+				}
+			} else {
+				file->current = fs->table_cache[file->current];
+			}
+		}
+	}
+	return OPTIONAL_OK;
 }
 
 // TODO: restrict buffer?
-void read_from(FileSystem* restrict fs, FileIO* restrict file, FileCursor location, uint8_t* restrict buffer, size_t size) {
-	while(size != 0) {
-		
-		fread();
+OptionalResult seek(FileSystem* restrict fs, FileIO* restrict file, FileCursor location) {
+	file->current = file->first;
+	for(ClusterLocation i = location / CLUSTER_SIZE; i != 0; i--) {
+		file->current = fs->table_cache[file->current];
+		if(file->current == TV_FINAL) {
+			return OPTIONAL_STRUCTURE_ERROR;
+		}
+	}
+	file->offset = location % CLUSTER_SIZE;
+}
+
+// TODO: restrict buffer?
+OptionalResult read_from(FileSystem* restrict fs, FileIO* restrict file, FileCursor location, uint8_t* restrict buffer, size_t size) {
+	while(1) {
+		if(size == 0) {
+			return OPTIONAL_OK;
+		}
+		ClusterLocation next = fs->table_cache[file->current];
+		ClusterOffset length = CLUSTER_SIZE;
+		if(next == TV_FINAL) {
+			length = min(length, file->metaFileSize);
+		}
+		ClusterOffset left = length - file->offset;
+		ClusterOffset to_read = min(size, left);
+		fseek(fs->file, ROOT_OFFSET + file->current * CLUSTER_SIZE + file->offset, SEEK_SET);
+		fread(buffer, 1, to_read, fs->file);
+		file->offset = (file->offset + to_read) % CLUSTER_SIZE;
+		buffer += to_read;
+		size -= to_read;
+		if(to_read == left) {
+			if(file->current == TV_FINAL && size != 0) {
+				return OPTIONAL_STRUCTURE_ERROR;
+			}
+			file->current = next;
+		}
 	}
 }
 
