@@ -13,7 +13,7 @@ typedef uint8_t OptionalResult;
 
 enum {
 	CLUSTER_SIZE = 4*1024,
-	MAX_CLUSTERS = 2048,
+	MAX_CLUSTERS = 8*1024,
 	TABLE_SIZE = MAX_CLUSTERS*sizeof(ClusterLocation),
 	ROOT_OFFSET = TABLE_SIZE,
 	
@@ -262,7 +262,51 @@ typedef struct {
 	ClusterOffset offset;
 	ClusterLocation first;
 	ClusterLocation current;
+	FileCursor metaFileSizeLocation;
 } FileIO;
+
+// TODO: restrict buffer?
+OptionalResult set_length(FileSystem* restrict fs, FileIO* restrict file, FileCursor length) {
+	ClusterLocation current = file->first;
+	ClusterLocation remaining = length / CLUSTER_SIZE;
+	file->metaFileSize = length % CLUSTER_SIZE;
+	file->current = file->first;
+	file->offset = 0;
+	while(1) {
+		if(fs->table_cache[current] == TV_FINAL) {
+			if(extend(fs, &current)) {
+				return OPTIONAL_STRUCTURE_ERROR;
+			}
+		} else {
+			current = fs->table_cache[current];
+		}
+		if (remaining == 0) {
+			break;
+		}
+		remaining--;
+	}
+	ClusterLocation next = fs->table_cache[current];
+	fs->table_cache[current] = TV_FINAL;
+	current = next;
+	while(current != TV_FINAL) {
+		next = fs->table_cache[current];
+		fs->table_cache[current] = TV_EMPTY;
+		current = next;
+	}
+	return OPTIONAL_OK;
+}
+
+// TODO: restrict buffer?
+OptionalResult seek(FileSystem* restrict fs, FileIO* restrict file, FileCursor location) {
+	file->current = file->first;
+	for(ClusterLocation i = location / CLUSTER_SIZE; i != 0; i--) {
+		file->current = fs->table_cache[file->current];
+		if(file->current == TV_FINAL) {
+			return OPTIONAL_STRUCTURE_ERROR;
+		}
+	}
+	file->offset = location % CLUSTER_SIZE;
+}
 
 // TODO: restrict buffer?
 void write_to_file(FileSystem* restrict fs, FileIO* restrict file, FileCursor location, uint8_t* restrict buffer, size_t size) {
@@ -289,19 +333,7 @@ void write_to_file(FileSystem* restrict fs, FileIO* restrict file, FileCursor lo
 }
 
 // TODO: restrict buffer?
-OptionalResult seek(FileSystem* restrict fs, FileIO* restrict file, FileCursor location) {
-	file->current = file->first;
-	for(ClusterLocation i = location / CLUSTER_SIZE; i != 0; i--) {
-		file->current = fs->table_cache[file->current];
-		if(file->current == TV_FINAL) {
-			return OPTIONAL_STRUCTURE_ERROR;
-		}
-	}
-	file->offset = location % CLUSTER_SIZE;
-}
-
-// TODO: restrict buffer?
-OptionalResult read_from(FileSystem* restrict fs, FileIO* restrict file, FileCursor location, uint8_t* restrict buffer, size_t size) {
+OptionalResult read_from_file(FileSystem* restrict fs, FileIO* restrict file, FileCursor location, uint8_t* restrict buffer, size_t size) {
 	while(1) {
 		if(size == 0) {
 			return OPTIONAL_OK;
@@ -325,6 +357,10 @@ OptionalResult read_from(FileSystem* restrict fs, FileIO* restrict file, FileCur
 			file->current = next;
 		}
 	}
+}
+
+Result close_file(FileSystem* restrict fs, FileIO* restrict file) {
+
 }
 
 /*
@@ -353,7 +389,5 @@ void close_fs_file() {
 
 void open_dir();
 void rem_dir();
-void make_dir();
-void make_file();
 void rem_file();
 void open_file();
