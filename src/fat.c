@@ -54,8 +54,9 @@ typedef struct {
 } DirCursor;
 
 typedef struct {
-	ClusterLocation current_cluster;
 	uint8_t meta[FILE_META];
+	ClusterLocation current_cluster;
+	ClusterLocation current_offset;
 } DirEntry;
 
 typedef struct {
@@ -96,7 +97,7 @@ uint8_t is_folder(DirEntry* restrict entry) {
 
 FileCursor get_file_size(FileSystem* restrict fs, DirEntry* restrict entry) {
 	FileCursor ret = (FileCursor) get_meta_size(entry);
-	ClusterLocation cluster = entry->current_cluster;
+	ClusterLocation cluster = get_cluster(entry);
 	while(fs->table_cache[cluster] != TV_FINAL) {
 		cluster = fs->table_cache[cluster];
 		ret += cluster;
@@ -193,16 +194,16 @@ OptionalResult resolve(FileSystem* restrict fs, DirCursor* restrict current, Dir
 		if(ferror(fs->file)) {
 			return OPTIONAL_IO_ERROR;
 		}
-		size_t offset = 0;
-		while(offset != CLUSTER_SIZE) {
-			if (buffer[offset+OFFSET_NAME] == 0) { // Empty file name
+		result->current_offset = 0;
+		while(result->current_offset != CLUSTER_SIZE) {
+			if (buffer[result->current_offset+OFFSET_NAME] == 0) { // Empty file name
 				return OPTIONAL_STRUCTURE_ERROR;
 			}
-			if(memcmp(target, buffer+offset+OFFSET_NAME, MAX_FILE_NAME) == 0) {
-				memcpy(result->meta, buffer+offset, FILE_META);
+			if(memcmp(target, buffer+result->current_offset+OFFSET_NAME, MAX_FILE_NAME) == 0) {
+				memcpy(result->meta, buffer+result->current_offset, FILE_META);
 				return OPTIONAL_OK;
 			}
-			offset += FILE_META;
+			result->current_offset += FILE_META;
 		}
 		if(fs->table_cache[result->current_cluster] == TV_FINAL) {
 			return OPTIONAL_STRUCTURE_ERROR;
@@ -264,6 +265,14 @@ typedef struct {
 	ClusterLocation current;
 	FileCursor metaFileSizeLocation;
 } FileIO;
+
+Result open_file(FileSystem* restrict fs, DirEntry* restrict entry, FileIO* restrict result) {
+	assert(is_folder(entry));
+	result->offset = 0;
+	result->current = result->first = get_cluster(entry);
+	result->metaFileSize = get_meta_size(entry);
+	result->metaFileSizeLocation = ROOT_OFFSET + entry->current_cluster*CLUSTER_SIZE + entry->current_offset + OFFSET_SIZE;
+}
 
 // TODO: restrict buffer?
 OptionalResult set_length(FileSystem* restrict fs, FileIO* restrict file, FileCursor length) {
@@ -360,7 +369,10 @@ OptionalResult read_from_file(FileSystem* restrict fs, FileIO* restrict file, Fi
 }
 
 Result close_file(FileSystem* restrict fs, FileIO* restrict file) {
-
+	uint8_t buffer[sizeof(ClusterOffset)];
+	write_u16(buffer, file->metaFileSize);
+	fseek(fs->file, file->metaFileSizeLocation, SEEK_SET);
+	fwrite(buffer, 1, sizeof(ClusterOffset), fs->file);
 }
 
 /*
@@ -384,10 +396,10 @@ file {
 */
 
 void close_fs_file() {
+	fflush(file);
 	fclose(file);
 }
 
 void open_dir();
 void rem_dir();
 void rem_file();
-void open_file();
