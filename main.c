@@ -6,7 +6,7 @@
 
 #include "src/fat.h"
 
-char inputBuffer[4096];
+char LUT[256];
 
 char * strDelimiter(const char * string) {
     char *returnString = malloc(sizeof(string) + 1);
@@ -27,7 +27,27 @@ void stringToLower(char *string) {
         *p = *p > 0x40 && *p < 0x5b ? *p | 0x60 : *p;
 }
 
+void split(char* before, char** after, char delimeter) {
+    char* p = before;
+    while(1) {
+        if(*p == '\0') {
+            *after = p;
+        }
+        if(*p == delimeter) {
+            *p = '\0';
+            *after = p+1;
+        }
+        p++;
+    }
+}
+
 int main() {
+    for(uint16_t c = 0; c <= 256; c++) {
+        LUT[c] = (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '_';
+    }
+    
+    char inputBuffer[4096];
+
     FileSystem *fileSystem = (FileSystem*)malloc(sizeof(FileSystem));
     DirCursor *dirCursor = (DirCursor*) malloc(sizeof(DirCursor));
     char *path_fs = "t";
@@ -40,50 +60,48 @@ int main() {
         printf("/>>");
         fgets(inputBuffer, sizeof(inputBuffer), stdin);
 
-        char *command = strtok(inputBuffer, " ");
-        char *rootCommand = command;
+        char *afterCommand;
+        char *rootCommand = inputBuffer;
+        split(rootCommand, &afterCommand, ' ');
         stringToLower(rootCommand);
 
         // Записать строку в файл
-        if (strstr(rootCommand, "write") != NULL) {
-            command = strtok(NULL, " ");
-            char *pathToFile = command;
-            char *text = malloc(30);
-            text[0] = '\0';
-            char *temp;
-            int flag = 0;
-            command = strtok(NULL, " ");
-            while(command!=NULL) {
-                if (flag != 0) {
-                    temp = text;
-                    text = strcat(temp, command);
-                    strcat(text, " ");
-                } else {
-                    strcpy(text,command);
-                    flag = 1;
-                    strcat(text, " ");
-                }
-                if (flag != 0) {
-                    command = strtok(NULL, " ");
-                    flag = 1;
-                }
-            }
-            printf("%s\n", text);
-            free(text);
+        if (strcmp(rootCommand, "write") == 0) {
+            char *content;
+            char *pathToFile = afterCommand;
+            split(pathToFile, &content, ' ');
+            printf("%d %s\n", strlen(content)+1, content);
 
             // Выйти из программы
-        } else if (strstr(rootCommand, "close") != NULL){
+        } else if (strcmp(rootCommand, "exit") == 0){
             break;
 
             // Создать папку
-        } else if (strstr(rootCommand, "mkdir") != NULL) {
-            uint8_t *dirName = (uint8_t*)malloc(MAX_FILE_NAME* sizeof(uint8_t));
-            dirName = strtok(NULL, " ");
+        } else if (strcmp(rootCommand, "mkdir") == 0) {
+            char *dirName = afterCommand;
+            size_t len = strlen(dirName);
+            if (len > MAX_FILE_NAME) {
+                printf("allo");
+            }
+            for(char *p = dirName; *p; ++p) {
+                if(!LUT[*p]) {
+                    printf("allo");
+                }
+            }
+            memset(dirName+len, 0, MAX_FILE_NAME-len);
+            DirEntry directory;
+            init_meta(&directory, 1, dirName);
+            switch (create_file(fileSystem, dirCursor, &directory)) {
+                OPTIONAL_OK:
+                    break;
+                OPTIONAL_STRUCTURE_ERROR:
+                    printf("не хватает места");
+                    break;
+                OPTIONAL_IO_ERROR:
+                    printf("ошибка чтения/записи");
+                    return 1;
+            }
 
-            size_t lengthDirName = strlen(dirName);
-            DirEntry *directory = (DirEntry*)malloc(sizeof(DirEntry));
-
-            init_meta(directory, 1, dirName);
         }
 
     }
