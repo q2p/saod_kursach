@@ -1,5 +1,7 @@
 #include "fat.h"
 
+// TODO: поставить ferror, где забыл
+
 void read(FileSystem* restrict fs, ClusterLocation cluster, uint8_t* restrict buffer) {
 	fseek(fs->file, ROOT_OFFSET + cluster * CLUSTER_SIZE, SEEK_SET);
 	fread(buffer, 1, CLUSTER_SIZE, fs->file);
@@ -254,7 +256,7 @@ OptionalResult seek(FileSystem* restrict fs, FileIO* restrict file, FileCursor l
 }
 
 // TODO: restrict buffer?
-void write_to_file(FileSystem* restrict fs, FileIO* restrict file, FileCursor location, uint8_t* restrict buffer, size_t size) {
+OptionalResult write_to_file(FileSystem* restrict fs, FileIO* restrict file, FileCursor location, uint8_t* restrict buffer, size_t size) {
 	while(size != 0) {
 		ClusterOffset left = CLUSTER_SIZE - file->offset;
 		ClusterOffset to_write = min(size, left);
@@ -309,6 +311,7 @@ Result close_file(FileSystem* restrict fs, FileIO* restrict file) {
 	write_u16(buffer, file->metaFileSize);
 	fseek(fs->file, file->metaFileSizeLocation, SEEK_SET);
 	fwrite(buffer, 1, sizeof(ClusterOffset), fs->file);
+	return ferror(fs->file);
 }
 
 /*

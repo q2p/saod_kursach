@@ -99,7 +99,7 @@ OptionalResult set_length(FileSystem* fs, FileIO* file, FileCursor length);
 OptionalResult seek(FileSystem* fs, FileIO* file, FileCursor location);
 
 // TODO: buffer?
-void write_to_file(FileSystem* fs, FileIO* file, FileCursor location, uint8_t* buffer, size_t size);
+OptionalResult write_to_file(FileSystem* fs, FileIO* file, FileCursor location, uint8_t* buffer, size_t size);
 
 // TODO: buffer?
 OptionalResult read_from_file(FileSystem* fs, FileIO* file, FileCursor location, uint8_t* buffer, size_t size);
