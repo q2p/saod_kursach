@@ -42,7 +42,7 @@ void split(char* before, char** after, char delimeter) {
 }
 
 int main() {
-    for(uint16_t c = 0; c <= 256; c++) {
+    for(uint16_t c = 0; c != 256; c++) {
         LUT[c] = (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '_';
     }
     
