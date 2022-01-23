@@ -46,7 +46,8 @@ FileCursor get_file_size(FileSystem* restrict fs, DirEntry* restrict entry) {
 // TODO: name должен быть padded
 void init_meta(DirEntry* restrict entry, uint8_t is_folder, uint8_t* restrict name) {
 	write_u16(entry->meta + OFFSET_SIZE, is_folder ? FS_FOLDER : 0);
-	memcpy(entry->meta + OFFSET_NAME, name, MAX_FILE_NAME);
+	memset(entry->meta + OFFSET_NAME, 0, MAX_FILE_NAME);
+	strcpy(entry->meta + OFFSET_NAME, name);
 }
 
 ClusterLocation allocate(FileSystem* restrict fs) {
@@ -195,14 +196,6 @@ OptionalResult create_file(FileSystem* restrict fs, DirCursor* restrict current,
 		}
 	}
 }
-
-typedef struct {
-	ClusterOffset metaFileSize;
-	ClusterOffset offset;
-	ClusterLocation first;
-	ClusterLocation current;
-	FileCursor metaFileSizeLocation;
-} FileIO;
 
 Result open_file(FileSystem* restrict fs, DirEntry* restrict entry, FileIO* restrict result) {
 	assert(is_folder(entry));

@@ -23,7 +23,7 @@ enum {
 	OFFSET_SIZE = 0,
 	OFFSET_CLUSTER = sizeof(ClusterOffset),
 	OFFSET_NAME = sizeof(ClusterOffset) + sizeof(ClusterLocation),
-	MAX_FILE_NAME = FILE_META - OFFSET_NAME,
+	MAX_FILE_NAME = FILE_META - OFFSET_NAME - 1,
 	FILES_PER_CLUSTER = CLUSTER_SIZE / FILE_META,
 
 	TV_EMPTY = 0x0000,
