@@ -111,4 +111,8 @@ OptionalResult write_to_file(FileSystem* fs, FileIO* file, FileCursor location, 
 // TODO: buffer?
 OptionalResult read_from_file(FileSystem* fs, FileIO* file, FileCursor location, uint8_t* buffer, size_t size);
 
+void dir_iter(FileSystem* fs, DirCursor* current, DirIter* iter);
+
+OptionalResult dir_iter_next(FileSystem* fs, DirIter* iter, DirEntry* next);
+
 Result close_file(FileSystem* fs, FileIO* file);
