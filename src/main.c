@@ -56,6 +56,20 @@ enum {
 	FS_SIZE = 16*1024*1024
 };
 
+Result verify_filename(uint8_t* filename) {
+	size_t len = strlen(filename);
+	// TODO: forbid ..
+	if (len > MAX_FILE_NAME) {
+		return 1;
+	}
+	while(*filename) {
+		if (!LUT[*(filename++)]) {
+			return 1;
+		}
+	}
+	return 0;
+}
+
 int main() {
 	init_table();
 
@@ -77,47 +91,46 @@ int main() {
 		fgets(inputBuffer, INPUT_BUFFER, stdin);
 		trim_untill_newline(inputBuffer);
 
-		char *afterCommand;
-		char *rootCommand = inputBuffer;
+		uint8_t *afterCommand;
+		uint8_t *rootCommand = inputBuffer;
 		split(rootCommand, &afterCommand, ' ');
 		stringToLower(rootCommand);
 
 		// Записать строку в файл
 		if (strcmp(rootCommand, "write") == 0) {
-			char *content;
-			char *pathToFile = afterCommand;
-			split(pathToFile, &content, ' ');
+			uint8_t *content;
+			uint8_t *pathToFile = afterCommand;
+			split(afterCommand, &content, ' ');
 			printf("%d %s\n", strlen(content) + 1, content);
 
-			// Выйти из программы
+			if(verify_filename(pathToFile)) {
+				printf("Filename is either too long or does contain illegal symbols");
+			} else {
+				//....
+			}
+
 		} else if (strcmp(rootCommand, "exit") == 0) {
 			break;
 
 			// Создать папку
 		} else if (strcmp(rootCommand, "mkdir") == 0) {
-			char *dirName = afterCommand;
-			size_t len = strlen(dirName);
-			// TODO: forbid ..
-			if (len > MAX_FILE_NAME) {
-				printf("Filename too long");
-			}
-			for (char *p = dirName; *p; ++p) {
-				if (!LUT[*p]) {
-					printf("Filename contains illegal symbols");
+			uint8_t *dirName = afterCommand;
+			if(verify_filename(dirName)) {
+				printf("Filename is either too long or does contain illegal symbols");
+			} else {
+				DirEntry directory;
+				init_meta(&directory, 1, dirName);
+				switch (create_file(&fs, &directory_stack[directory_stack_ptr], &directory)) {
+					case OPTIONAL_OK:
+						printf("Folder created");
+						break;
+					case OPTIONAL_STRUCTURE_ERROR:
+						printf("Not enough space");
+						break;
+					case OPTIONAL_IO_ERROR:
+						printf("IO Error");
+						return 1;
 				}
-			}
-			DirEntry directory;
-			init_meta(&directory, 1, dirName);
-			switch (create_file(&fs, &directory_stack[directory_stack_ptr], &directory)) {
-				case OPTIONAL_OK:
-					printf("Folder created");
-					break;
-				case OPTIONAL_STRUCTURE_ERROR:
-					printf("Not enough space");
-					break;
-				case OPTIONAL_IO_ERROR:
-					printf("IO Error");
-					return 1;
 			}
 		} else if (strcmp(rootCommand, "cd") == 0) {
 			uint8_t *path = afterCommand;
