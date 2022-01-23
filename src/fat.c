@@ -43,6 +43,10 @@ FileCursor get_file_size(FileSystem* restrict fs, DirEntry* restrict entry) {
 	return ret;
 }
 
+uint8_t* get_file_name(DirEntry* restrict entry) {
+	return entry->meta+OFFSET_NAME;
+}
+
 // TODO: name должен быть padded
 void init_meta(DirEntry* restrict entry, uint8_t is_folder, uint8_t* restrict name) {
 	write_u16(entry->meta + OFFSET_SIZE, is_folder ? FS_FOLDER : 0);
@@ -197,8 +201,13 @@ OptionalResult create_file(FileSystem* restrict fs, DirCursor* restrict current,
 	}
 }
 
-Result open_file(FileSystem* restrict fs, DirEntry* restrict entry, FileIO* restrict result) {
+void open_dir(FileSystem* restrict fs, DirEntry* restrict entry, DirCursor* restrict result) {
 	assert(is_folder(entry));
+	result->current_cluster = get_cluster(entry);
+}
+
+void open_file(FileSystem* restrict fs, DirEntry* restrict entry, FileIO* restrict result) {
+	assert(!is_folder(entry));
 	result->offset = 0;
 	result->current = result->first = get_cluster(entry);
 	result->metaFileSize = get_meta_size(entry);
@@ -307,6 +316,34 @@ Result close_file(FileSystem* restrict fs, FileIO* restrict file) {
 	return ferror(fs->file);
 }
 
+void dir_iter(FileSystem* restrict fs, DirCursor* restrict current, DirIter* restrict iter) {
+	iter->current_cluster = current->current_cluster;
+	iter->current_offset = 0;
+}
+
+OptionalResult dir_iter_next(FileSystem* restrict fs, DirIter* restrict iter, DirEntry* restrict next) {
+	if(iter->current_offset == CLUSTER_SIZE) {
+		if(fs->table_cache[iter->current_cluster] == TV_FINAL) {
+			return OPTIONAL_STRUCTURE_ERROR;
+		}
+		iter->current_cluster = fs->table_cache[iter->current_cluster];
+		read(fs, iter->current_cluster, iter->buffer);
+		if(ferror(fs->file)) {
+			return OPTIONAL_IO_ERROR;
+		}
+		iter->current_offset = 0;
+	}
+	next->current_cluster = iter->current_cluster;
+	if (iter->buffer[iter->current_offset+OFFSET_NAME] == 0) { // Empty file name
+		return OPTIONAL_STRUCTURE_ERROR;
+	}
+	memcpy(next->meta, iter->buffer+iter->current_offset, FILE_META);
+	next->current_cluster = iter->current_cluster;
+	next->current_offset = iter->current_offset;
+	iter->current_offset += FILE_META;
+	return OPTIONAL_OK;
+}
+
 /*
 file
 dir {
@@ -332,6 +369,5 @@ void close_fs_file() {
 	fclose(file);
 }
 
-void open_dir();
 void rem_dir();
 void rem_file();

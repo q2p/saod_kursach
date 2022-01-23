@@ -144,7 +144,7 @@ int main() {
 					case OPTIONAL_OK:
 						if(is_folder(&next_dir)) {
 							directory_stack_ptr++;
-							open_dir(&next_dir, &directory_stack[directory_stack_ptr]);
+							open_dir(&fs, &next_dir, &directory_stack[directory_stack_ptr]);
 
 							strcat(currentPath, path);
 							strcat(currentPath, "/");

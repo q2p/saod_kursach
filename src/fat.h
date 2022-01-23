@@ -62,8 +62,9 @@ typedef struct {
 } DirEntry;
 
 typedef struct {
-	ClusterLocation current_cluster;
-	uint8_t next_folder;
+    ClusterLocation current_cluster;
+	ClusterLocation current_offset;
+	uint8_t buffer[CLUSTER_SIZE];
 } DirIter;
 
 typedef struct {
@@ -77,6 +78,8 @@ typedef struct {
 uint8_t is_folder(DirEntry* entry);
 
 FileCursor get_file_size(FileSystem* fs, DirEntry* entry);
+
+uint8_t* get_file_name(DirEntry* restrict entry);
 
 // TODO: name должен быть padded
 void init_meta(DirEntry* entry, uint8_t is_folder, uint8_t* name);
@@ -92,7 +95,9 @@ OptionalResult resolve(FileSystem* fs, DirCursor* current, DirEntry* result, uin
 
 OptionalResult create_file(FileSystem* fs, DirCursor* current, DirEntry* target);
 
-Result open_file(FileSystem* fs, DirEntry* entry, FileIO* result);
+void open_file(FileSystem* fs, DirEntry* entry, FileIO* result);
+
+void open_dir(FileSystem* fs, DirEntry* entry, DirCursor* result);
 
 // TODO: buffer?
 OptionalResult set_length(FileSystem* fs, FileIO* file, FileCursor length);
