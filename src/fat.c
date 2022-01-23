@@ -319,6 +319,7 @@ Result close_file(FileSystem* restrict fs, FileIO* restrict file) {
 void dir_iter(FileSystem* restrict fs, DirCursor* restrict current, DirIter* restrict iter) {
 	iter->current_cluster = current->current_cluster;
 	iter->current_offset = 0;
+	read(fs, iter->current_cluster, iter->buffer);
 }
 
 OptionalResult dir_iter_next(FileSystem* restrict fs, DirIter* restrict iter, DirEntry* restrict next) {
