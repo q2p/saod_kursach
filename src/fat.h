@@ -6,7 +6,6 @@
 #include <string.h>
 #include <assert.h>
 
-
 typedef uint16_t ClusterLocation;
 typedef uint16_t ClusterOffset;
 typedef uint32_t FileCursor;
@@ -24,7 +23,7 @@ enum {
     OFFSET_SIZE = 0,
     OFFSET_CLUSTER = sizeof(ClusterOffset),
     OFFSET_NAME = sizeof(ClusterOffset) + sizeof(ClusterLocation),
-    MAX_FILE_NAME = FILE_META - OFFSET_NAME,
+    MAX_FILE_NAME = FILE_META - OFFSET_NAME - 1,
     FILES_PER_CLUSTER = CLUSTER_SIZE / FILE_META,
 
     TV_EMPTY = 0x0000,
@@ -37,6 +36,14 @@ enum {
     OPTIONAL_IO_ERROR = 1,
     OPTIONAL_STRUCTURE_ERROR = 2,
 };
+
+_STATIC_ASSERT(sizeof(uint8_t) == 1);
+_STATIC_ASSERT(sizeof(ClusterLocation) % sizeof(uint8_t) == 0);
+_STATIC_ASSERT(TABLE_SIZE % CLUSTER_SIZE == 0);
+_STATIC_ASSERT(CLUSTER_SIZE % FILE_META == 0);
+_STATIC_ASSERT(FILES_PER_CLUSTER < UINT8_MAX);
+_STATIC_ASSERT(FS_FOLDER >= CLUSTER_SIZE);
+_STATIC_ASSERT(MAX_CLUSTERS < UINT16_MAX);
 
 typedef struct {
     FILE* file;
@@ -56,7 +63,8 @@ typedef struct {
 
 typedef struct {
     ClusterLocation current_cluster;
-    uint8_t next_folder;
+    ClusterLocation current_offset;
+    uint8_t buffer[CLUSTER_SIZE];
 } DirIter;
 
 typedef struct {
@@ -67,22 +75,44 @@ typedef struct {
     FileCursor metaFileSizeLocation;
 } FileIO;
 
-void read(FileSystem* restrict fs, ClusterLocation cluster, uint8_t* restrict buffer);
-void write(FileSystem* restrict fs, ClusterLocation cluster, uint8_t* restrict buffer);
-uint16_t read_u16(uint8_t* restrict ptr);
-void write_u16(uint8_t* restrict ptr, uint16_t value);
-ClusterLocation get_cluster(DirEntry* restrict entry);
-ClusterOffset get_meta_size(DirEntry* restrict entry);
-uint8_t is_folder(DirEntry* restrict entry);
-FileCursor get_file_size(FileSystem* restrict fs, DirEntry* restrict entry);
-void init_meta(DirEntry* restrict entry, uint8_t is_folder, uint8_t* restrict name);
-ClusterLocation allocate(FileSystem* restrict fs);
-Result extend(FileSystem* restrict fs, ClusterLocation* restrict cursor);
-Result init_fs_file(FileSystem* restrict fs, char* restrict path, uint16_t clusters_count);
-Result open_fs_file(FileSystem* restrict fs, char* restrict path);
-void get_root(FileSystem* restrict fs, DirCursor* restrict out);
-OptionalResult resolve(FileSystem* restrict fs, DirCursor* restrict current, DirEntry* restrict result, uint8_t* restrict target);
-OptionalResult create_file(FileSystem* restrict fs, DirCursor* restrict current, DirEntry* restrict target);
-OptionalResult write_to_file(FileSystem* restrict fs, FileIO* restrict file, FileCursor location, uint8_t* restrict buffer, size_t size);
-void read_from(FileSystem* restrict fs, FileIO* restrict file, FileCursor location, uint8_t* restrict buffer, size_t size);
+uint8_t is_folder(DirEntry* entry);
 
+FileCursor get_file_size(FileSystem* fs, DirEntry* entry);
+
+uint8_t* get_file_name(DirEntry* restrict entry);
+
+// TODO: name должен быть padded
+void init_meta(DirEntry* entry, uint8_t is_folder, uint8_t* name);
+
+Result init_fs_file(FileSystem* fs, char* path, uint16_t clusters_count);
+
+Result open_fs_file(FileSystem* fs, char* path);
+
+void get_root(FileSystem* fs, DirCursor* out);
+
+// TODO: restrict: а если target из dir?
+OptionalResult resolve(FileSystem* fs, DirCursor* current, DirEntry* result, uint8_t* target);
+
+OptionalResult create_file(FileSystem* fs, DirCursor* current, DirEntry* target);
+
+void open_file(FileSystem* fs, DirEntry* entry, FileIO* result);
+
+void open_dir(FileSystem* fs, DirEntry* entry, DirCursor* result);
+
+// TODO: buffer?
+OptionalResult set_length(FileSystem* fs, FileIO* file, FileCursor length);
+
+// TODO: buffer?
+OptionalResult seek(FileSystem* fs, FileIO* file, FileCursor location);
+
+// TODO: buffer?
+OptionalResult write_to_file(FileSystem* fs, FileIO* file, uint8_t* buffer, size_t size);
+
+// TODO: buffer?
+OptionalResult read_from_file(FileSystem* fs, FileIO* file, uint8_t* buffer, size_t size);
+
+void dir_iter(FileSystem* fs, DirCursor* current, DirIter* iter);
+
+OptionalResult dir_iter_next(FileSystem* fs, DirIter* iter, DirEntry* next);
+
+Result close_file(FileSystem* fs, FileIO* file);
