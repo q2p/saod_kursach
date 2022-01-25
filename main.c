@@ -118,8 +118,6 @@ int main() {
                             open_file(&fs, &file, &fileIo);
                             while (1) {
                                 fgets(content_buf, 4096, stdin);
-                                scanf( "%s",content_buf);
-                                strcat(content_buf, "\n");
                                 if (content_buf[0] == '\n') {
                                     break;
                                 }
@@ -144,8 +142,6 @@ int main() {
                         open_file(&fs, &file, &fileIo);
                         while (1) {
                             fgets(content_buf, 4096, stdin);
-                            scanf( "%s",content_buf);
-                            strcat(content_buf, "\n");
                             if (content_buf[0] == '\n') {
                                 break;
                             }
