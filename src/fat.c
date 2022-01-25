@@ -325,7 +325,7 @@ OptionalResult seek(FileSystem* restrict fs, FileIO* restrict file, FileCursor l
 }
 
 // TODO: restrict buffer?
-OptionalResult write_to_file(FileSystem* restrict fs, FileIO* restrict file, FileCursor location, uint8_t* restrict buffer, size_t size) {
+OptionalResult write_to_file(FileSystem* restrict fs, FileIO* restrict file, uint8_t* restrict buffer, size_t size) {
 	while(size != 0) {
 		ClusterOffset left = CLUSTER_SIZE - file->offset;
 		ClusterOffset to_write = min(size, left);
@@ -349,7 +349,7 @@ OptionalResult write_to_file(FileSystem* restrict fs, FileIO* restrict file, Fil
 }
 
 // TODO: restrict buffer?
-OptionalResult read_from_file(FileSystem* restrict fs, FileIO* restrict file, FileCursor location, uint8_t* restrict buffer, size_t size) {
+OptionalResult read_from_file(FileSystem* restrict fs, FileIO* restrict file, uint8_t* restrict buffer, size_t size) {
 	while(1) {
 		if(size == 0) {
 			return OPTIONAL_OK;
