@@ -201,6 +201,73 @@ OptionalResult create_file(FileSystem* restrict fs, DirCursor* restrict current,
 	}
 }
 
+OptionalResult delete_file(FileSystem* restrict fs, DirCursor* restrict parent, DirEntry* restrict target) {
+	// TODO: проверить на баги
+	ClusterLocation current = get_cluster(target);
+	while(1) {
+		ClusterLocation next = fs->table_cache[current];
+		fs->table_cache[current] = TV_EMPTY;
+		if(next == TV_FINAL) {
+			break;
+		}
+		current = next;
+	}
+
+	uint8_t buffer[CLUSTER_SIZE];
+	size_t offset = 0;
+	ClusterLocation prev = TV_EMPTY;
+	ClusterLocation current = parent->current_cluster;
+	read(fs, current, buffer);
+	if(ferror(fs->file)) {
+		return OPTIONAL_IO_ERROR;
+	}
+	while(1) {
+		if (buffer[offset+OFFSET_NAME] == 0) { // Empty file name
+			offset -= FILE_META;
+			fseek(fs->file, ROOT_OFFSET + target->current_cluster * CLUSTER_SIZE + target->current_offset, SEEK_SET);
+			fwrite(buffer+offset, 1, FILE_META, fs->file);
+			if(ferror(fs->file)) {
+				return OPTIONAL_IO_ERROR;
+			}
+			if(offset == 0) {
+				if (prev == TV_EMPTY) {
+					buffer[offset+OFFSET_NAME] = 0;
+					write(fs, current, buffer);
+				} else {
+					fs->table_cache[prev] = TV_FINAL;
+					fs->table_cache[current] = TV_EMPTY;
+				}
+			} else {
+				buffer[offset+OFFSET_NAME] = 0;
+				write(fs, current, buffer);
+			}
+			return OPTIONAL_OK;
+		}
+		offset += FILE_META;
+		if (offset == CLUSTER_SIZE) {
+			if(fs->table_cache[current] == TV_FINAL) {
+				offset -= FILE_META;
+				fseek(fs->file, ROOT_OFFSET + target->current_cluster * CLUSTER_SIZE + target->current_offset, SEEK_SET);
+				fwrite(buffer+offset, 1, FILE_META, fs->file);
+				if(ferror(fs->file)) {
+					return OPTIONAL_IO_ERROR;
+				}
+				buffer[offset+OFFSET_NAME] = 0;
+				write(fs, current, buffer);
+				memset(buffer, 0, CLUSTER_SIZE);
+				return OPTIONAL_OK;
+			} else {
+				prev = current;
+				current = fs->table_cache[current];
+				read(fs, current, buffer);
+				if(ferror(fs->file)) {
+					return OPTIONAL_IO_ERROR;
+				}
+			}
+		}
+	}
+}
+
 void open_dir(FileSystem* restrict fs, DirEntry* restrict entry, DirCursor* restrict result) {
 	assert(is_folder(entry));
 	result->current_cluster = get_cluster(entry);
