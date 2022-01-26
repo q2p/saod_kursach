@@ -18,8 +18,7 @@ typedef uint8_t OptionalResult;
 enum {
 	CLUSTER_SIZE = 4*1024,
 	MAX_CLUSTERS = 8*1024,
-	TABLE_SIZE = MAX_CLUSTERS*sizeof(ClusterLocation),
-	ROOT_OFFSET = TABLE_SIZE,
+	ROOT_OFFSET = MAX_CLUSTERS*sizeof(ClusterLocation),
 	
 	FILE_META = 64,
 	OFFSET_SIZE = 0,
@@ -42,7 +41,7 @@ enum {
 
 _STATIC_ASSERT(sizeof(uint8_t) == 1);
 _STATIC_ASSERT(sizeof(ClusterLocation) % sizeof(uint8_t) == 0);
-_STATIC_ASSERT(TABLE_SIZE % CLUSTER_SIZE == 0);
+_STATIC_ASSERT(MAX_CLUSTERS*sizeof(ClusterLocation) % CLUSTER_SIZE == 0);
 _STATIC_ASSERT(CLUSTER_SIZE % FILE_META == 0);
 _STATIC_ASSERT(FILES_PER_CLUSTER < UINT8_MAX);
 _STATIC_ASSERT(FS_FOLDER >= CLUSTER_SIZE);
@@ -51,7 +50,7 @@ _STATIC_ASSERT(MAX_CLUSTERS < UINT16_MAX);
 typedef struct {
 	FILE* file;
 	uint16_t clusters_count;
-	ClusterLocation table_cache[TABLE_SIZE];
+	ClusterLocation table_cache[MAX_CLUSTERS];
 } FileSystem;
 
 typedef struct {
@@ -117,7 +116,7 @@ FileCursor get_file_size(FileSystem* fs, DirEntry* entry) {
 	ClusterLocation cluster = get_cluster(entry);
 	while(fs->table_cache[cluster] != TV_FINAL) {
 		cluster = fs->table_cache[cluster];
-		ret += cluster;
+		ret += CLUSTER_SIZE;
 	}
 	return ret;
 }
@@ -133,7 +132,7 @@ void init_meta(DirEntry* entry, uint8_t is_folder, uint8_t* name) {
 }
 
 ClusterLocation allocate(FileSystem* fs) {
-	for(size_t i = 1; i != TABLE_SIZE; i++) {
+	for(size_t i = 1; i != MAX_CLUSTERS; i++) {
 		if (fs->table_cache[i] == 0) {
 			fs->table_cache[i] = TV_FINAL;
 			return i;
@@ -195,7 +194,7 @@ Result open_fs_file(FileSystem* fs, char* path) {
 	}
 	fs->clusters_count = max(UINT16_MAX, (file_length - ROOT_OFFSET) / CLUSTER_SIZE);
 
-	rewind(fs->file);
+	fseek(fs->file, 0, SEEK_SET);
 	fread(fs->table_cache, sizeof(ClusterLocation), MAX_CLUSTERS, fs->file);
 
 	return ferror(fs->file);
@@ -520,8 +519,10 @@ file {
 */
 
 Result close_fs_file(FileSystem* fs) {
-	rewind(fs->file);
+	fseek(fs->file, 0, SEEK_SET);
 	fwrite(fs->table_cache, 1, sizeof(fs->table_cache), fs->file);
+	fflush(fs->file);
+	fclose(fs->file);
 	return ferror(fs->file);
 }
 
@@ -553,7 +554,7 @@ void split(uint8_t* before, uint8_t** after, uint8_t delimiter) {
 
 void init_table() {
 	for (uint16_t c = 0; c != 256; c++) {
-		LUT[c] = (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '_';
+		LUT[c] = (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '_' || c == '.' || c == '-';
 	}
 }
 
@@ -587,6 +588,7 @@ enum {
 
 const uint8_t* MESSAGE_IO_ERROR = "IO Error\n";
 const uint8_t* MESSAGE_OUT_OF_SPACE = "Not enough space\n";
+const uint8_t* MESSAGE_NOT_FOUND = "File not found\n";
 
 Result verify_filename(uint8_t* filename) {
 	size_t len = strlen(filename);
@@ -689,7 +691,7 @@ Result action_write(uint8_t* input_buffer, FileSystem* fs, DirCursor* dir, uint8
 	}
 	return 0;
 }
-Result action_mkdir(uint8_t* input_buffer, FileSystem* fs, DirCursor* current_dir, uint8_t* dir_name) {
+Result action_mkdir(FileSystem* fs, DirCursor* current_dir, uint8_t* dir_name) {
 	if(verify_filename(dir_name)) {
 		return 0;
 	}
@@ -719,7 +721,7 @@ Result action_mkdir(uint8_t* input_buffer, FileSystem* fs, DirCursor* current_di
 			return 1;
 	}
 }
-Result action_read(uint8_t* input_buffer, FileSystem* fs, DirCursor* current_dir, uint8_t* file_name) {
+Result action_read(FileSystem* fs, DirCursor* current_dir, uint8_t* file_name) {
 	DirEntry file;
 	uint8_t file_name_buffer[FILE_NAME_BUFFER];
 	memset(file_name_buffer, 0, FILE_NAME_BUFFER);
@@ -743,7 +745,7 @@ Result action_read(uint8_t* input_buffer, FileSystem* fs, DirCursor* current_dir
 	FileCursor size = get_file_size(fs, &file);
 	FileCursor counter = 0;
 	open_file(fs, &file, &file_io);
-	printf("File contents:%d\n", size);
+	printf("File length: %d.\nFile contents:\n", size);
 	while (counter < size) {
 		size_t to_read = min(IO_BUFFER-1, size - counter);
 		if (read_from_file(fs, &file_io, buffer, to_read)) {
@@ -759,6 +761,148 @@ Result action_read(uint8_t* input_buffer, FileSystem* fs, DirCursor* current_dir
 		return 1;
 	}
 	return 0;
+}
+Result action_dir(FileSystem* fs, DirCursor* current_dir, uint8_t* file_name) {
+	DirIter iter;
+	DirEntry entry;
+
+	dir_iter(fs, current_dir, &iter);
+
+	while (1) {
+		switch (dir_iter_next(fs, &iter, &entry)) {
+			case OPTIONAL_OK:
+				printf("%s - ", get_file_name(&entry));
+				if (is_folder(&entry)) {
+					printf("DIR\n");
+				} else {
+					printf("FILE - %d bytes\n", get_file_size(fs, &entry));
+				}
+				break;
+			case OPTIONAL_STRUCTURE_ERROR:
+				return 0;
+			case OPTIONAL_IO_ERROR:
+				printf(MESSAGE_IO_ERROR);
+				return 1;
+		}
+	}
+}
+Result action_export(FileSystem* fs, DirCursor* current_dir, uint8_t* after_command) {
+	uint8_t *internal = after_command;
+	uint8_t *external;
+	split(internal, &external, ' ');
+
+	uint8_t file_name[FILE_NAME_BUFFER];
+	memset(file_name, 0, FILE_NAME_BUFFER);
+	strcpy(file_name, internal);
+	DirEntry file;
+	switch (resolve(fs, current_dir, &file, file_name)) {
+		case OPTIONAL_OK:
+			break;
+		case OPTIONAL_STRUCTURE_ERROR:
+			printf(MESSAGE_NOT_FOUND);
+			return 0;
+		case OPTIONAL_IO_ERROR:
+			printf(MESSAGE_IO_ERROR);
+			return 1;
+	}
+	FileIO internal_file;
+	FileCursor size = get_file_size(fs, &file);
+	FileCursor cursor = 0;
+	FILE *external_file = fopen(external, "wb");
+	if (external_file == NULL) {
+		printf("Can't open external file.\n");
+		return 0;
+	}
+	open_file(fs, &file, &internal_file);
+	while(cursor < size) {
+		size_t to_transfer = min(size - cursor, IO_BUFFER);
+		uint8_t buffer[IO_BUFFER];
+		if (read_from_file(fs, &internal_file, buffer, to_transfer)) {
+			fclose(external_file);
+			printf(MESSAGE_IO_ERROR);
+			return 1;
+		}
+		fwrite(buffer, 1, to_transfer, external_file);
+		if (ferror(external_file)) {
+			fclose(external_file);
+			printf(MESSAGE_IO_ERROR);
+			return 1;
+		}
+		cursor += to_transfer;
+	}
+	if (close_file(fs, &internal_file)) {
+		printf(MESSAGE_IO_ERROR);
+		return 1;
+	}
+
+	fclose(external_file);
+	return 0;
+}
+Result action_import(FileSystem* fs, DirCursor* current_dir, uint8_t* after_command) {
+	uint8_t *internal = after_command;
+	uint8_t *external;
+	split(internal, &external, ' ');
+	if(verify_filename(internal)) {
+		return 0;
+	}
+	uint8_t file_name[FILE_NAME_BUFFER];
+	memset(file_name, 0, FILE_NAME_BUFFER);
+	strcpy(file_name, internal);
+
+	DirEntry file;
+	FileIO internal_file;
+
+	switch (resolve(fs, current_dir, &file, file_name)) {
+		case OPTIONAL_OK:
+			if (is_folder(&file)) {
+				printf("Not a file!");
+				return 0;
+			}
+			break;
+		case OPTIONAL_STRUCTURE_ERROR:
+			init_meta(&file, 0, file_name);
+			create_file(fs, current_dir, &file);
+			break;
+		case OPTIONAL_IO_ERROR:
+			printf(MESSAGE_IO_ERROR);
+			return 1;
+	}
+	FILE *external_file = fopen(external, "rb");
+	if (external_file == NULL || ferror(external_file)) {
+		printf(MESSAGE_IO_ERROR);
+		return 1;
+	}
+	open_file(fs, &file, &internal_file);
+	while(!feof(external_file)) {
+		uint8_t buffer[IO_BUFFER];
+		size_t read = fread(buffer, 1, IO_BUFFER, external_file);
+		if(ferror(external_file)) {
+			printf(MESSAGE_IO_ERROR);
+			goto bad_exit;
+		}
+		switch (write_to_file(fs, &internal_file, buffer, read)) {
+			case OPTIONAL_OK:
+				break;
+			case OPTIONAL_STRUCTURE_ERROR:
+				printf(MESSAGE_OUT_OF_SPACE);
+				goto bad_exit;
+			case OPTIONAL_IO_ERROR:
+				printf(MESSAGE_IO_ERROR);
+				goto bad_exit;
+		}
+	}
+
+	if (close_file(fs, &internal_file)) {
+		printf(MESSAGE_IO_ERROR);
+		goto bad_exit;
+	}
+
+	fclose(external_file);
+	return 0;
+
+	bad_exit:
+	fclose(external_file);
+	return 1;
 }
 
 int main() {
@@ -790,7 +934,7 @@ int main() {
 		if (strcmp(root_command, "exit") == 0) {
 			break;
 		} else if (strcmp(root_command, "read") == 0) {
-			if(action_read(inputBuffer, &fs, &directory_stack[directory_stack_ptr], after_command)) {
+			if(action_read(&fs, &directory_stack[directory_stack_ptr], after_command)) {
 				break;
 			}
 		} else if (strcmp(root_command, "write") == 0) {
@@ -798,7 +942,19 @@ int main() {
 				break;
 			}
 		} else if (strcmp(root_command, "mkdir") == 0) {
-			if(action_mkdir(inputBuffer, &fs, &directory_stack[directory_stack_ptr], after_command)) {
+			if(action_mkdir(&fs, &directory_stack[directory_stack_ptr], after_command)) {
+				break;
+			}
+		} else if (strcmp(root_command, "dir") == 0) {
+			if(action_dir(&fs, &directory_stack[directory_stack_ptr], after_command)) {
+				break;
+			}
+		} else if (strcmp(root_command, "import") == 0) {
+			if(action_import(&fs, &directory_stack[directory_stack_ptr], after_command)) {
+				break;
+			}
+		} else if (strcmp(root_command, "export") == 0) {
+			if(action_export(&fs, &directory_stack[directory_stack_ptr], after_command)) {
 				break;
 			}
 		} else if (strcmp(root_command, "cd") == 0) {
@@ -816,9 +972,7 @@ int main() {
 			} else {
 				if (*path == '/') {
 					strcpy(currentPath, "/");
-
 					directory_stack_ptr = 0;
-					get_root(&fs, &directory_stack[directory_stack_ptr]);
 					path++;
 				}
 
@@ -853,120 +1007,10 @@ int main() {
 				}
 				exit_loop2:;
 			}
-		} else if (strcmp(root_command, "import") == 0) {
-			uint8_t *internal = after_command;
-			uint8_t *external;
-			uint8_t file_name[FILE_NAME_BUFFER];
-			split(internal, &external, ' ');
-			if(verify_filename(internal)) {
-				printf("Filename is either too long or does contain illegal symbols");
-				continue;
-			}
-			strcpy(file_name, internal);
-
-			DirEntry file;
-			FileIO internal_file;
-
-			switch (resolve(&fs, &directory_stack[directory_stack_ptr], &file, file_name)) {
-				case OPTIONAL_OK:
-					if (is_folder(&file)) {
-						printf("Not a file!");
-					} else {
-						open_file(&fs, &file, &internal_file);
-					}
-					break;
-				case OPTIONAL_STRUCTURE_ERROR:
-					init_meta(&file, 0, file_name);
-					create_file(&fs, &directory_stack[directory_stack_ptr], &file);
-					break;
-				case OPTIONAL_IO_ERROR:
-					printf(MESSAGE_IO_ERROR);
-					return 1;
-			}
-			FILE *external_file = fopen(external, "rb");
-			if (external_file == NULL) {
-				printf("File doesn't exist");
-				continue;
-			}
-			if(ferror(external_file)) {
-				printf(MESSAGE_IO_ERROR);
-				continue;
-			}
-			while(!feof(external_file)) {
-				uint8_t buffer[IO_BUFFER];
-				size_t read = fread(buffer, 1, IO_BUFFER, external_file);
-				if(ferror(external_file)) {
-					printf(MESSAGE_IO_ERROR);
-					break;
-				}
-				switch (write_to_file(&fs, &internal_file, buffer, read)) {
-					case OPTIONAL_OK:
-						printf("Data writing was successful\n");
-						break;
-					case OPTIONAL_STRUCTURE_ERROR:
-						printf(MESSAGE_OUT_OF_SPACE);
-						goto exit_loop1;
-				}
-			}
-			exit_loop1:;
-			close_file(&fs, &internal_file);
-
-			fclose(external_file);
-		} else if (strcmp(root_command, "export") == 0) {
-			uint8_t *dst;
-			uint8_t *src = after_command;
-			split(after_command, &dst, ' ');
-
-			DirEntry file;
-			FileIO fileIo;
-			FileCursor size;
-			uint8_t buffer[IO_BUFFER];
-			int counter = 0;
-
-			switch (resolve(&fs, &directory_stack[directory_stack_ptr], &file, src)) {
-				case OPTIONAL_OK:
-					break;
-				case OPTIONAL_STRUCTURE_ERROR:
-					printf(MESSAGE_OUT_OF_SPACE);
-					continue;
-				case OPTIONAL_IO_ERROR:
-					printf(MESSAGE_IO_ERROR);
-					return 1;
-			}
-			FILE *external_file = fopen(dst, "wb");
-			if (external_file == NULL) {
-				printf("File doesn't exist");
-				continue;
-			}
-			size = get_file_size(&fs, &file);
-			open_file(&fs, &file, &fileIo);
-			while(counter <= size) {
-				read_from_file(&fs, &fileIo, buffer, size);
-				fwrite(buffer,1 ,min(size - counter, IO_BUFFER),external_file);
-				counter += IO_BUFFER;
-			}
-			close_file(&fs, &fileIo);
-
-			fclose(external_file);
-		} else if (strcmp(root_command, "dir") == 0) {
-			DirIter iter;
-			DirEntry nextEntry;
-
-			dir_iter(&fs, &directory_stack[directory_stack_ptr], &iter);
-
-			while (dir_iter_next(&fs, &iter, &nextEntry) == OPTIONAL_OK) {
-				printf("%s - ", get_file_name(&nextEntry));
-				if (is_folder(&nextEntry)) {
-					printf("DIR\n");
-				} else {
-					printf("FILE\n");
-				}
-			}
 		}
 	}
 	if(close_fs_file(&fs)) {
 		printf(MESSAGE_IO_ERROR);
-		return 1;
 	}
 	return 0;
 }
