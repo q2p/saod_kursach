@@ -1,12 +1,10 @@
 #include <stdio.h>
-#include <string.h>
-#include <malloc.h>
 #include <stdlib.h>
+#include <string.h>
 #include <ctype.h>
+#include <conio.h>
 
 #include "src/fat.h"
-
-#define STACK_UNDERFLOW -101
 
 uint8_t LUT[256];
 
@@ -87,9 +85,26 @@ int main() {
     size_t directory_stack_ptr = 0;
     uint8_t currentPath[4096] = "/";
 
-    if (init_fs_file(&fs, "fs.dat", FS_SIZE / CLUSTER_SIZE) != 0) {
-        printf("Can't open FS.");
+    char symbol;
+
+    printf("Do you wanna to create a file system? [1]\n Or load an existing[2]\n");
+    symbol = getchar();
+    if (symbol == '1') {
+        printf("Enter a file system name:");
+        scanf("%s", inputBuffer);
+
+        if (init_fs_file(&fs, inputBuffer, FS_SIZE / CLUSTER_SIZE) != 0) {
+            printf("Can't open FS.");
         return 1;
+        }
+    } else if (symbol == '2') {
+        printf("Enter a file system name:");
+        scanf("%s", inputBuffer);
+
+        if (open_fs_file(&fs, inputBuffer) != 0) {
+            printf("Can't open FS.");
+            return 1;
+        }
     }
 
     get_root(&fs, &directory_stack[0]);
@@ -105,13 +120,10 @@ int main() {
 
         // Записать строку в файл
         if (strcmp(rootCommand, "write") == 0) {
-            uint8_t *content;
             uint8_t *pathToFile = afterCommand;
-            split(afterCommand, &content, ' ');
-            printf("%d %s\n", strlen(content) + 1, content);
             DirEntry file;
             FileIO fileIo;
-            FileCursor f_cursor;
+            uint8_t content_buf[4096];
             switch (resolve(&fs, &directory_stack[directory_stack_ptr], &file, pathToFile)) {
                 case OPTIONAL_OK:
                     printf("not create file");
@@ -122,13 +134,18 @@ int main() {
                             printf("Not a file!");
                         } else {
                             open_file(&fs, &file, &fileIo);
-                            switch (write_to_file(&fs, &fileIo, content, strlen(content))) {
-                                case OPTIONAL_OK:
-                                    printf("Data writing was successful\n");
+                            while (1) {
+                                fgets(content_buf, 4096, stdin);
+                                if (content_buf[0] == '\n') {
                                     break;
-                                case OPTIONAL_STRUCTURE_ERROR:
-                                    printf("Not enough space");
-                                    break;
+                                }
+                                switch (write_to_file(&fs, &fileIo, content_buf, strlen(content_buf))) {
+                                    case OPTIONAL_OK:
+                                        break;
+                                    case OPTIONAL_STRUCTURE_ERROR:
+                                        printf("Not enough space");
+                                        break;
+                                }
                             }
                             close_file(&fs, &fileIo);
                         }
@@ -141,13 +158,18 @@ int main() {
                         printf("Filename is either too long or does contain illegal symbols");
                     } else {
                         open_file(&fs, &file, &fileIo);
-                        switch (write_to_file(&fs, &fileIo, content, strlen(content))) {
-                            case OPTIONAL_OK:
-                                printf("Data writing was successful\n");
+                        while (1) {
+                            fgets(content_buf, 4096, stdin);
+                            if (content_buf[0] == '\n') {
                                 break;
-                            case OPTIONAL_STRUCTURE_ERROR:
-                                printf("Not enough space");
-                                break;
+                            }
+                            switch (write_to_file(&fs, &fileIo, content_buf, strlen(content_buf))) {
+                                case OPTIONAL_OK:
+                                    break;
+                                case OPTIONAL_STRUCTURE_ERROR:
+                                    printf("Not enough space");
+                                    break;
+                            }
                         }
                         close_file(&fs, &fileIo);
                     }
@@ -243,12 +265,12 @@ int main() {
                                 }
                             }
                             break;
-                            case OPTIONAL_STRUCTURE_ERROR:
-                                    printf("Not found");
-                                break;
-                                case OPTIONAL_IO_ERROR:
-                                    printf("IO Error");
-                                return 1;
+                        case OPTIONAL_STRUCTURE_ERROR:
+                            printf("Not found");
+                            break;
+                        case OPTIONAL_IO_ERROR:
+                            printf("IO Error");
+                            return 1;
                     }
                 }
             } else {
@@ -273,25 +295,6 @@ int main() {
                         return 1;
                 }
             }
-        } else if (strcmp(rootCommand, "echo") == 0) {
-            uint8_t *file_name = afterCommand;
-            if(verify_filename(file_name)) {
-                printf("Filename is either too long or does contain illegal symbols");
-            } else {
-                DirEntry file;
-                init_meta(&file, 0, file_name);
-                switch (create_file(&fs, &directory_stack[directory_stack_ptr], &file)) {
-                    case OPTIONAL_OK:
-                        printf("File created\n");
-                        break;
-                    case OPTIONAL_STRUCTURE_ERROR:
-                        printf("Not enough space");
-                        break;
-                    case OPTIONAL_IO_ERROR:
-                        printf("IO Error");
-                        return 1;
-                }
-            }
         } else if (strcmp(rootCommand, "import") == 0) {
             uint8_t *src;
             uint8_t *dst = afterCommand;
@@ -301,10 +304,6 @@ int main() {
                 printf("File doesn't exist");
                 continue;
             }
-
-            uint8_t buffer[4096];
-            fread(buffer, 1, 4096, source);
-            fclose(source);
 
             DirEntry file;
             FileIO fileIo;
@@ -319,14 +318,19 @@ int main() {
                             printf("Not a file!");
                         } else {
                             open_file(&fs, &file, &fileIo);
-                            switch (write_to_file(&fs, &fileIo, buffer, strlen(buffer))) {
-                                case OPTIONAL_OK:
-                                    printf("Data writing was successful\n");
-                                    break;
-                                case OPTIONAL_STRUCTURE_ERROR:
-                                    printf("Not enough space");
-                                    break;
+                            while(!feof(source)) {
+                                uint8_t buffer[4096];
+                                fread(buffer, 1, 4096, source);
+                                switch (write_to_file(&fs, &fileIo, buffer, strlen(buffer))) {
+                                    case OPTIONAL_OK:
+                                        printf("Data writing was successful\n");
+                                        break;
+                                    case OPTIONAL_STRUCTURE_ERROR:
+                                        printf("Not enough space");
+                                        break;
+                                }
                             }
+
                             close_file(&fs, &fileIo);
                         }
                     }
@@ -338,30 +342,42 @@ int main() {
                         printf("Filename is either too long or does contain illegal symbols");
                     } else {
                         open_file(&fs, &file, &fileIo);
-                        switch (write_to_file(&fs, &fileIo, buffer, strlen(buffer))) {
-                            case OPTIONAL_OK:
-                                printf("Data writing was successful\n");
-                                break;
-                            case OPTIONAL_STRUCTURE_ERROR:
-                                printf("Not enough space");
-                                break;
+                        while(!feof(source)) {
+                            uint8_t buffer[4096];
+                            fread(buffer, 1, 4096, source);
+                            switch (write_to_file(&fs, &fileIo, buffer, strlen(buffer))) {
+                                case OPTIONAL_OK:
+                                    printf("Data writing was successful\n");
+                                    break;
+                                case OPTIONAL_STRUCTURE_ERROR:
+                                    printf("Not enough space");
+                                    break;
+                            }
                         }
                         close_file(&fs, &fileIo);
                     }
             }
+
+            fclose(source);
 
         } else if (strcmp(rootCommand, "read") == 0) {
             uint8_t *file_name = afterCommand;
 
             DirEntry file;
             FileIO fileIo;
+            FileCursor size;
             uint8_t dst_buf[4096];
+            int counter = 0;
             switch (resolve(&fs, &directory_stack[directory_stack_ptr], &file, file_name)) {
                 case OPTIONAL_OK:
+                    size = get_file_size(&fs, &file);
                     open_file(&fs, &file, &fileIo);
-                    read_from_file(&fs, &fileIo, dst_buf, 4096);
+                    while (counter < size) {
+                        counter += 4096;
+                        read_from_file(&fs, &fileIo, dst_buf, size);
+                        printf("File content:\n%s", dst_buf);
+                    }
                     close_file(&fs, &fileIo);
-                    printf("File content:\n%s", dst_buf);
                     break;
                 case OPTIONAL_STRUCTURE_ERROR:
                     printf("Not enough space");
@@ -377,13 +393,25 @@ int main() {
 
             DirEntry file;
             FileIO fileIo;
-
+            FileCursor size;
             uint8_t buffer[4096];
+            int counter = 0;
+            FILE *dst_file = fopen(dst, "wt");
+
+            if (dst_file == NULL) {
+                printf("File doesn't exist");
+                continue;
+            }
 
             switch (resolve(&fs, &directory_stack[directory_stack_ptr], &file, src)) {
                 case OPTIONAL_OK:
+                    size = get_file_size(&fs, &file);
                     open_file(&fs, &file, &fileIo);
-                    read_from_file(&fs, &fileIo, buffer, 4096);
+                    while(counter <= size) {
+                        read_from_file(&fs, &fileIo, buffer, size);
+                        fwrite(buffer,1 ,min(size - counter, 4096),dst_file);
+                        counter += 4096;
+                    }
                     close_file(&fs, &fileIo);
                     break;
                 case OPTIONAL_STRUCTURE_ERROR:
@@ -394,13 +422,20 @@ int main() {
                     return 1;
             }
 
-            FILE *dst_file = fopen(dst, "wt");
-            if (dst_file == NULL) {
-                printf("File doesn't exist");
-                continue;
-            }
+            fclose(dst_file);
+        } else if (strcmp(rootCommand, "dir")) {
+            DirIter iter;
+            DirEntry nextEntry;
 
-            fprintf(dst_file, "%s", buffer);
+            dir_iter(&fs, &directory_stack[directory_stack_ptr], &iter);
+
+            while (dir_iter_next(&fs, &iter, &nextEntry) == OPTIONAL_OK) {
+                if (is_folder(&nextEntry)) {
+                    printf("<D> %s", get_file_name(&nextEntry));
+                } else {
+                    printf("<F> %s", get_file_name(&nextEntry));
+                }
+            }
         }
     }
     return 0;
