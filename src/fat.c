@@ -1,5 +1,7 @@
 #include "fat.h"
 
+// TODO: поставить ferror, где забыл
+
 void read(FileSystem* restrict fs, ClusterLocation cluster, uint8_t* restrict buffer) {
 	fseek(fs->file, ROOT_OFFSET + cluster * CLUSTER_SIZE, SEEK_SET);
 	fread(buffer, 1, CLUSTER_SIZE, fs->file);
@@ -41,10 +43,15 @@ FileCursor get_file_size(FileSystem* restrict fs, DirEntry* restrict entry) {
 	return ret;
 }
 
+uint8_t* get_file_name(DirEntry* restrict entry) {
+	return entry->meta+OFFSET_NAME;
+}
+
 // TODO: name должен быть padded
 void init_meta(DirEntry* restrict entry, uint8_t is_folder, uint8_t* restrict name) {
 	write_u16(entry->meta + OFFSET_SIZE, is_folder ? FS_FOLDER : 0);
-	memcpy(entry->meta + OFFSET_NAME, name, MAX_FILE_NAME);
+	memset(entry->meta + OFFSET_NAME, 0, MAX_FILE_NAME);
+	strcpy(entry->meta + OFFSET_NAME, name);
 }
 
 ClusterLocation allocate(FileSystem* restrict fs) {
@@ -144,9 +151,6 @@ OptionalResult resolve(FileSystem* restrict fs, DirCursor* restrict current, Dir
 		if(fs->table_cache[result->current_cluster] == TV_FINAL) {
 			return OPTIONAL_STRUCTURE_ERROR;
 		}
-		if(fs->table_cache[result->current_cluster] == TV_FINAL) {
-			return OPTIONAL_STRUCTURE_ERROR;
-		}
 		result->current_cluster = fs->table_cache[result->current_cluster];
 	}
 }
@@ -197,16 +201,80 @@ OptionalResult create_file(FileSystem* restrict fs, DirCursor* restrict current,
 	}
 }
 
-typedef struct {
-	ClusterOffset metaFileSize;
-	ClusterOffset offset;
-	ClusterLocation first;
-	ClusterLocation current;
-	FileCursor metaFileSizeLocation;
-} FileIO;
+OptionalResult delete_file(FileSystem* restrict fs, DirCursor* restrict parent, DirEntry* restrict target) {
+	// TODO: проверить на баги
+	ClusterLocation current = get_cluster(target);
+	while(1) {
+		ClusterLocation next = fs->table_cache[current];
+		fs->table_cache[current] = TV_EMPTY;
+		if(next == TV_FINAL) {
+			break;
+		}
+		current = next;
+	}
 
-Result open_file(FileSystem* restrict fs, DirEntry* restrict entry, FileIO* restrict result) {
+	uint8_t buffer[CLUSTER_SIZE];
+	size_t offset = 0;
+	ClusterLocation prev = TV_EMPTY;
+	ClusterLocation current = parent->current_cluster;
+	read(fs, current, buffer);
+	if(ferror(fs->file)) {
+		return OPTIONAL_IO_ERROR;
+	}
+	while(1) {
+		if (buffer[offset+OFFSET_NAME] == 0) { // Empty file name
+			offset -= FILE_META;
+			fseek(fs->file, ROOT_OFFSET + target->current_cluster * CLUSTER_SIZE + target->current_offset, SEEK_SET);
+			fwrite(buffer+offset, 1, FILE_META, fs->file);
+			if(ferror(fs->file)) {
+				return OPTIONAL_IO_ERROR;
+			}
+			if(offset == 0) {
+				if (prev == TV_EMPTY) {
+					buffer[offset+OFFSET_NAME] = 0;
+					write(fs, current, buffer);
+				} else {
+					fs->table_cache[prev] = TV_FINAL;
+					fs->table_cache[current] = TV_EMPTY;
+				}
+			} else {
+				buffer[offset+OFFSET_NAME] = 0;
+				write(fs, current, buffer);
+			}
+			return OPTIONAL_OK;
+		}
+		offset += FILE_META;
+		if (offset == CLUSTER_SIZE) {
+			if(fs->table_cache[current] == TV_FINAL) {
+				offset -= FILE_META;
+				fseek(fs->file, ROOT_OFFSET + target->current_cluster * CLUSTER_SIZE + target->current_offset, SEEK_SET);
+				fwrite(buffer+offset, 1, FILE_META, fs->file);
+				if(ferror(fs->file)) {
+					return OPTIONAL_IO_ERROR;
+				}
+				buffer[offset+OFFSET_NAME] = 0;
+				write(fs, current, buffer);
+				memset(buffer, 0, CLUSTER_SIZE);
+				return OPTIONAL_OK;
+			} else {
+				prev = current;
+				current = fs->table_cache[current];
+				read(fs, current, buffer);
+				if(ferror(fs->file)) {
+					return OPTIONAL_IO_ERROR;
+				}
+			}
+		}
+	}
+}
+
+void open_dir(FileSystem* restrict fs, DirEntry* restrict entry, DirCursor* restrict result) {
 	assert(is_folder(entry));
+	result->current_cluster = get_cluster(entry);
+}
+
+void open_file(FileSystem* restrict fs, DirEntry* restrict entry, FileIO* restrict result) {
+	assert(!is_folder(entry));
 	result->offset = 0;
 	result->current = result->first = get_cluster(entry);
 	result->metaFileSize = get_meta_size(entry);
@@ -257,7 +325,7 @@ OptionalResult seek(FileSystem* restrict fs, FileIO* restrict file, FileCursor l
 }
 
 // TODO: restrict buffer?
-void write_to_file(FileSystem* restrict fs, FileIO* restrict file, FileCursor location, uint8_t* restrict buffer, size_t size) {
+OptionalResult write_to_file(FileSystem* restrict fs, FileIO* restrict file, uint8_t* restrict buffer, size_t size) {
 	while(size != 0) {
 		ClusterOffset left = CLUSTER_SIZE - file->offset;
 		ClusterOffset to_write = min(size, left);
@@ -281,7 +349,7 @@ void write_to_file(FileSystem* restrict fs, FileIO* restrict file, FileCursor lo
 }
 
 // TODO: restrict buffer?
-OptionalResult read_from_file(FileSystem* restrict fs, FileIO* restrict file, FileCursor location, uint8_t* restrict buffer, size_t size) {
+OptionalResult read_from_file(FileSystem* restrict fs, FileIO* restrict file, uint8_t* restrict buffer, size_t size) {
 	while(1) {
 		if(size == 0) {
 			return OPTIONAL_OK;
@@ -312,14 +380,36 @@ Result close_file(FileSystem* restrict fs, FileIO* restrict file) {
 	write_u16(buffer, file->metaFileSize);
 	fseek(fs->file, file->metaFileSizeLocation, SEEK_SET);
 	fwrite(buffer, 1, sizeof(ClusterOffset), fs->file);
+	return ferror(fs->file);
 }
 
-// TODO: restrict buffer?
-void read_from(FileSystem* restrict fs, FileIO* restrict file, FileCursor location, uint8_t* restrict buffer, size_t size) {
-	while(size != 0) {
-		
-		fread();
+void dir_iter(FileSystem* restrict fs, DirCursor* restrict current, DirIter* restrict iter) {
+	iter->current_cluster = current->current_cluster;
+	iter->current_offset = 0;
+	read(fs, iter->current_cluster, iter->buffer);
+}
+
+OptionalResult dir_iter_next(FileSystem* restrict fs, DirIter* restrict iter, DirEntry* restrict next) {
+	if(iter->current_offset == CLUSTER_SIZE) {
+		if(fs->table_cache[iter->current_cluster] == TV_FINAL) {
+			return OPTIONAL_STRUCTURE_ERROR;
+		}
+		iter->current_cluster = fs->table_cache[iter->current_cluster];
+		read(fs, iter->current_cluster, iter->buffer);
+		if(ferror(fs->file)) {
+			return OPTIONAL_IO_ERROR;
+		}
+		iter->current_offset = 0;
 	}
+	next->current_cluster = iter->current_cluster;
+	if (iter->buffer[iter->current_offset+OFFSET_NAME] == 0) { // Empty file name
+		return OPTIONAL_STRUCTURE_ERROR;
+	}
+	memcpy(next->meta, iter->buffer+iter->current_offset, FILE_META);
+	next->current_cluster = iter->current_cluster;
+	next->current_offset = iter->current_offset;
+	iter->current_offset += FILE_META;
+	return OPTIONAL_OK;
 }
 
 /*
@@ -347,6 +437,5 @@ void close_fs_file() {
 	fclose(file);
 }
 
-void open_dir();
 void rem_dir();
 void rem_file();
