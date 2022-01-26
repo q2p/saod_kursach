@@ -531,7 +531,7 @@ void rem_file();
 
 uint8_t LUT[256];
 
-void stringToLower(uint8_t *string) {
+void string_to_lower(uint8_t *string) {
 	for(uint8_t *p = string; *p; ++p)
 		*p = *p > 0x40 && *p < 0x5b ? *p | 0x60 : *p;
 }
@@ -622,7 +622,7 @@ Result init_or_mount(uint8_t* input_buffer, FileSystem* fs) {
 		trim_untill_newline(input_buffer);
 		uint8_t* path;
 		split(input_buffer, &path, ' ');
-		stringToLower(input_buffer);
+		string_to_lower(input_buffer);
 		if (strcmp(input_buffer, "init") == 0) {
 			if (init_fs_file(fs, path, FS_SIZE / CLUSTER_SIZE)) {
 				printf(MESSAGE_FS_CANT_INIT);
@@ -937,7 +937,7 @@ int main() {
 		uint8_t *after_command;
 		uint8_t *root_command = input_buffer;
 		split(root_command, &after_command, ' ');
-		stringToLower(root_command);
+		string_to_lower(root_command);
 
 		// Записать строку в файл
 		if (strcmp(root_command, "exit") == 0) {
