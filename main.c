@@ -586,9 +586,12 @@ enum {
 	DIR_STRING_BUFFER = 16*1024
 };
 
-const uint8_t* MESSAGE_IO_ERROR = "IO Error\n";
-const uint8_t* MESSAGE_OUT_OF_SPACE = "Not enough space\n";
-const uint8_t* MESSAGE_NOT_FOUND = "File not found\n";
+const uint8_t* MESSAGE_IO_ERROR = "I/O Error has occured.\n";
+const uint8_t* MESSAGE_OUT_OF_SPACE = "Not enough space.\n";
+const uint8_t* MESSAGE_NOT_FOUND = "File not found.\n";
+const uint8_t* MESSAGE_IS_DIR = "File is a directory.\n";
+const uint8_t* MESSAGE_IS_NOT_DIR = "File is not a directory.\n";
+const uint8_t* MESSAGE_FILE_ALREADY_EXISTS = "File already exists.\n";
 
 Result verify_filename(uint8_t* filename) {
 	size_t len = strlen(filename);
@@ -646,7 +649,7 @@ Result action_write(uint8_t* input_buffer, FileSystem* fs, DirCursor* dir, uint8
 	switch (resolve(fs, dir, &file, file_name)) {
 		case OPTIONAL_OK:
 			if (is_folder(&file)) {
-				printf("File is a directory\n");
+				printf(MESSAGE_IS_DIR);
 				return 0;
 			}
 			break;
@@ -701,7 +704,7 @@ Result action_mkdir(FileSystem* fs, DirCursor* current_dir, uint8_t* dir_name) {
 	strcpy(name_buffer, dir_name);
 	switch (resolve(fs, current_dir, &directory, name_buffer)) {
 		case OPTIONAL_OK:
-			printf("File already exists.\n");
+			printf(MESSAGE_FILE_ALREADY_EXISTS);
 			return 0;
 		case OPTIONAL_STRUCTURE_ERROR:
 			break;
@@ -730,14 +733,14 @@ Result action_read(FileSystem* fs, DirCursor* current_dir, uint8_t* file_name) {
 		case OPTIONAL_OK:
 			break;
 		case OPTIONAL_STRUCTURE_ERROR:
-			printf("File not found.");
+			printf(MESSAGE_NOT_FOUND);
 			return 0;
 		case OPTIONAL_IO_ERROR:
 			printf(MESSAGE_IO_ERROR);
 			return 1;
 	}
 	if (is_folder(&file)) {
-		printf("File is a directory.\n");
+		printf(MESSAGE_IS_DIR);
 		return 0;
 	}
 	FileIO file_io;
@@ -908,25 +911,25 @@ Result action_import(FileSystem* fs, DirCursor* current_dir, uint8_t* after_comm
 int main() {
 	init_table();
 
-	uint8_t inputBuffer[INPUT_BUFFER];
+	uint8_t input_buffer[INPUT_BUFFER];
 	FileSystem fs;
 
-	if (init_or_mount(inputBuffer, &fs)) {
+	if (init_or_mount(input_buffer, &fs)) {
 		return 1;
 	}
 
 	DirCursor directory_stack[MAX_DEPTH];
 	size_t directory_stack_ptr = 0;
-	uint8_t currentPath[DIR_STRING_BUFFER] = "/";
+	uint8_t current_path[DIR_STRING_BUFFER] = "/";
 
 	get_root(&fs, &directory_stack[0]);
 	while (1) {
-		printf("%s> ", currentPath);
-		fgets(inputBuffer, INPUT_BUFFER, stdin);
-		trim_untill_newline(inputBuffer);
+		printf("%s> ", current_path);
+		fgets(input_buffer, INPUT_BUFFER, stdin);
+		trim_untill_newline(input_buffer);
 
 		uint8_t *after_command;
-		uint8_t *root_command = inputBuffer;
+		uint8_t *root_command = input_buffer;
 		split(root_command, &after_command, ' ');
 		stringToLower(root_command);
 
@@ -938,7 +941,7 @@ int main() {
 				break;
 			}
 		} else if (strcmp(root_command, "write") == 0) {
-			if(action_write(inputBuffer, &fs, &directory_stack[directory_stack_ptr], after_command)) {
+			if(action_write(input_buffer, &fs, &directory_stack[directory_stack_ptr], after_command)) {
 				break;
 			}
 		} else if (strcmp(root_command, "mkdir") == 0) {
@@ -964,14 +967,14 @@ int main() {
 					continue;
 				}
 				directory_stack_ptr--;
-				size_t i = strlen(currentPath) - 1;
-				while(currentPath[i-1] != '/') {
+				size_t i = strlen(current_path) - 1;
+				while(current_path[i-1] != '/') {
 					i--;
 				}
-				currentPath[i] = '\0';
+				current_path[i] = '\0';
 			} else {
 				if (*path == '/') {
-					strcpy(currentPath, "/");
+					strcpy(current_path, "/");
 					directory_stack_ptr = 0;
 					path++;
 				}
@@ -988,24 +991,24 @@ int main() {
 					switch (resolve(&fs, &directory_stack[directory_stack_ptr], &next_dir, folder_name)) {
 						case OPTIONAL_OK:
 							if(!is_folder(&next_dir)) {
-								printf("Not a folder");
-								goto exit_loop2;
+								printf(MESSAGE_IS_NOT_DIR);
+								goto exit_loop;
 							}
 							directory_stack_ptr++;
 							open_dir(&fs, &next_dir, &directory_stack[directory_stack_ptr]);
 
-							strcat(currentPath, folder_name);
-							strcat(currentPath, "/");
+							strcat(current_path, folder_name);
+							strcat(current_path, "/");
 							break;
 						case OPTIONAL_STRUCTURE_ERROR:
-							printf("File named %s was not found\n", folder_name);
+							printf(MESSAGE_NOT_FOUND);
 							break;
 						case OPTIONAL_IO_ERROR:
 							printf(MESSAGE_IO_ERROR);
 							return 1;
 					}
 				}
-				exit_loop2:;
+				exit_loop:;
 			}
 		}
 	}
