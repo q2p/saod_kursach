@@ -65,7 +65,7 @@ typedef struct {
 } DirEntry;
 
 typedef struct {
-    ClusterLocation current_cluster;
+	ClusterLocation current_cluster;
 	ClusterLocation current_offset;
 	uint8_t buffer[CLUSTER_SIZE];
 } DirIter;
@@ -172,7 +172,7 @@ Result init_fs_file(FileSystem* fs, char* path, uint16_t clusters_count) {
 		return 1;
 	}
 
-	fwrite(fs->table_cache, 1, TABLE_SIZE, fs->file);
+	fwrite(fs->table_cache, 1, sizeof(fs->table_cache), fs->file);
 	fwrite(root, 1, CLUSTER_SIZE, fs->file);
 
 	fseek(fs->file, ROOT_OFFSET + CLUSTER_SIZE * clusters_count - 1, SEEK_SET);
@@ -240,34 +240,33 @@ OptionalResult create_file(FileSystem* fs, DirCursor* current, DirEntry* target)
 		if(ferror(fs->file)) {
 			return OPTIONAL_IO_ERROR;
 		}
-		size_t offset = 0;
+		target->current_offset = 0;
 		while(1) {
-			if (buffer[offset+OFFSET_NAME] == 0) { // Empty file name
+			if (buffer[target->current_offset+OFFSET_NAME] == 0) { // Empty file name
 				ClusterLocation first_cluster = allocate(fs);
 				if(first_cluster == TV_CANT_ALLOC) {
 					return OPTIONAL_STRUCTURE_ERROR;
 				}
 
 				write_u16(target->meta+OFFSET_CLUSTER, first_cluster);
-				memcpy(buffer+offset, target->meta, FILE_META);
+				memcpy(buffer+target->current_offset, target->meta, FILE_META);
 				write(fs, target->current_cluster, buffer);
 
 				memset(buffer, 0, CLUSTER_SIZE);
-				target->current_cluster = first_cluster;
-				write(fs, target->current_cluster, buffer);
+				write(fs, first_cluster, buffer);
 				return OPTIONAL_OK;
 			}
-			if(memcmp(target->meta+OFFSET_NAME, buffer+offset+OFFSET_NAME, FILE_NAME_BUFFER) == 0) {
+			if(memcmp(target->meta+OFFSET_NAME, buffer+target->current_offset+OFFSET_NAME, FILE_NAME_BUFFER) == 0) {
 				return OPTIONAL_STRUCTURE_ERROR;
 			}
-			offset += FILE_META;
-			if (offset == CLUSTER_SIZE) {
+			target->current_offset += FILE_META;
+			if (target->current_offset == CLUSTER_SIZE) {
 				if(target->current_cluster == TV_FINAL) {
 					if(extend(fs, &target->current_cluster)) {
 						return OPTIONAL_STRUCTURE_ERROR;
 					}
 					memset(buffer, 0, CLUSTER_SIZE);
-					offset = 0;
+					target->current_offset = 0;
 					continue;
 				} else {
 					target->current_cluster = fs->table_cache[target->current_cluster];
@@ -408,13 +407,20 @@ OptionalResult write_to_file(FileSystem* fs, FileIO* file, uint8_t* buffer, size
 		ClusterOffset left = CLUSTER_SIZE - file->offset;
 		ClusterOffset to_write = min(size, left);
 		fseek(fs->file, ROOT_OFFSET + file->current * CLUSTER_SIZE + file->offset, SEEK_SET);
-		fread(buffer, 1, to_write, fs->file);
+		fwrite(buffer, 1, to_write, fs->file);
+		if(ferror(fs->file)) {
+			return OPTIONAL_IO_ERROR;
+		}
 		file->offset = (file->offset + to_write) % CLUSTER_SIZE;
 		buffer += to_write;
 		size -= to_write;
+		if(fs->table_cache[file->current] == TV_FINAL && file->offset > file->metaFileSize) {
+			file->metaFileSize = file->offset;
+		}
 		if(to_write == left) {
 			// Выделять память под следующий блок, даже если нечего записывать
 			if(fs->table_cache[file->current] == TV_FINAL) {
+				file->metaFileSize = 0;
 				if(extend(fs, &file->current)) {
 					return OPTIONAL_STRUCTURE_ERROR;
 				}
@@ -427,10 +433,10 @@ OptionalResult write_to_file(FileSystem* fs, FileIO* file, uint8_t* buffer, size
 }
 
 // TODO: buffer?
-OptionalResult read_from_file(FileSystem* fs, FileIO* file, uint8_t* buffer, size_t size) {
+Result read_from_file(FileSystem* fs, FileIO* file, uint8_t* buffer, size_t size) {
 	while(1) {
 		if(size == 0) {
-			return OPTIONAL_OK;
+			return 0;
 		}
 		ClusterLocation next = fs->table_cache[file->current];
 		ClusterOffset length = CLUSTER_SIZE;
@@ -441,12 +447,15 @@ OptionalResult read_from_file(FileSystem* fs, FileIO* file, uint8_t* buffer, siz
 		ClusterOffset to_read = min(size, left);
 		fseek(fs->file, ROOT_OFFSET + file->current * CLUSTER_SIZE + file->offset, SEEK_SET);
 		fread(buffer, 1, to_read, fs->file);
+		if(ferror(fs->file)) {
+			return 1;
+		}
 		file->offset = (file->offset + to_read) % CLUSTER_SIZE;
 		buffer += to_read;
 		size -= to_read;
 		if(to_read == left) {
-			if(file->current == TV_FINAL && size != 0) {
-				return OPTIONAL_STRUCTURE_ERROR;
+			if(next == TV_FINAL) {
+				return 0;
 			}
 			file->current = next;
 		}
@@ -510,9 +519,10 @@ file {
 }
 */
 
-void close_fs_file() {
-	// fflush(file);
-	// fclose(file);
+Result close_fs_file(FileSystem* fs) {
+	rewind(fs->file);
+	fwrite(fs->table_cache, 1, sizeof(fs->table_cache), fs->file);
+	return ferror(fs->file);
 }
 
 void rem_dir();
@@ -575,16 +585,178 @@ enum {
 	DIR_STRING_BUFFER = 16*1024
 };
 
+const uint8_t* MESSAGE_IO_ERROR = "IO Error\n";
+const uint8_t* MESSAGE_OUT_OF_SPACE = "Not enough space\n";
+
 Result verify_filename(uint8_t* filename) {
 	size_t len = strlen(filename);
 	// TODO: forbid ..
 	if (len > MAX_FILE_NAME) {
+		printf("Filename is too long.\n");
 		return 1;
 	}
 	while(*filename) {
 		if (!LUT[*(filename++)]) {
+			printf("Filename contain illegal symbols.\n");
 			return 1;
 		}
+	}
+	return 0;
+}
+
+Result init_or_mount(uint8_t* input_buffer, FileSystem* fs) {
+	while(1) {
+		printf("init or mount?\n");
+		fgets(input_buffer, INPUT_BUFFER, stdin);
+		trim_untill_newline(input_buffer);
+		uint8_t* path;
+		split(input_buffer, &path, ' ');
+		stringToLower(input_buffer);
+		if (strcmp(input_buffer, "init") == 0) {
+			if (init_fs_file(fs, path, FS_SIZE / CLUSTER_SIZE)) {
+				printf("Can't init FS.\n");
+				return 1;
+			}
+			return 0;
+		} else if (strcmp(input_buffer, "mount") == 0) {
+			if (open_fs_file(fs, path)) {
+				printf("Can't mount FS.\n");
+				return 1;
+			}
+			return 0;
+		} else if (strcmp(input_buffer, "exit") == 0) {
+			return 1;
+		} else {
+			printf("Unknown command.\n");
+		}
+	}
+}
+
+Result action_write(uint8_t* input_buffer, FileSystem* fs, DirCursor* dir, uint8_t* after_command) {
+	if(verify_filename(after_command)) {
+		return 0;
+	}
+	uint8_t file_name[FILE_NAME_BUFFER];
+	memset(file_name, 0, FILE_NAME_BUFFER);
+	strcpy(file_name, after_command);
+	DirEntry file;
+	FileIO file_io;
+	switch (resolve(fs, dir, &file, file_name)) {
+		case OPTIONAL_OK:
+			if (is_folder(&file)) {
+				printf("File is a directory\n");
+				return 0;
+			}
+			break;
+		case OPTIONAL_STRUCTURE_ERROR:
+			init_meta(&file, 0, file_name);
+			switch (create_file(fs, dir, &file)) {
+				case OPTIONAL_OK:
+					break;
+				case OPTIONAL_STRUCTURE_ERROR:
+					printf(MESSAGE_OUT_OF_SPACE);
+					return 0;
+				case OPTIONAL_IO_ERROR:
+					printf(MESSAGE_IO_ERROR);
+					return 1;
+			}
+			break;
+		case OPTIONAL_IO_ERROR:
+			printf(MESSAGE_IO_ERROR);
+			return 1;
+	}
+	open_file(fs, &file, &file_io);
+	while (1) {
+		fgets(input_buffer, INPUT_BUFFER, stdin);
+		if (input_buffer[0] == '\n') {
+			break;
+		}
+		switch (write_to_file(fs, &file_io, input_buffer, strlen(input_buffer))) {
+			case OPTIONAL_OK:
+				break;
+			case OPTIONAL_STRUCTURE_ERROR:
+				printf(MESSAGE_OUT_OF_SPACE);
+				goto close_file;
+			case OPTIONAL_IO_ERROR:
+				printf(MESSAGE_IO_ERROR);
+				return 1;
+		}
+	}
+	close_file:;
+	if (close_file(fs, &file_io)) {
+		printf(MESSAGE_IO_ERROR);
+		return 1;
+	}
+	return 0;
+}
+Result action_mkdir(uint8_t* input_buffer, FileSystem* fs, DirCursor* current_dir, uint8_t* dir_name) {
+	if(verify_filename(dir_name)) {
+		return 0;
+	}
+	DirEntry directory;
+	uint8_t name_buffer[FILE_NAME_BUFFER];
+	memset(name_buffer, 0, FILE_NAME_BUFFER);
+	strcpy(name_buffer, dir_name);
+	switch (resolve(fs, current_dir, &directory, name_buffer)) {
+		case OPTIONAL_OK:
+			printf("File already exists.\n");
+			return 0;
+		case OPTIONAL_STRUCTURE_ERROR:
+			break;
+		case OPTIONAL_IO_ERROR:
+			printf(MESSAGE_IO_ERROR);
+			return 1;
+	}
+	init_meta(&directory, 1, name_buffer);
+	switch (create_file(fs, current_dir, &directory)) {
+		case OPTIONAL_OK:
+			return 0;
+		case OPTIONAL_STRUCTURE_ERROR:
+			printf(MESSAGE_OUT_OF_SPACE);
+			return 0;
+		case OPTIONAL_IO_ERROR:
+			printf(MESSAGE_IO_ERROR);
+			return 1;
+	}
+}
+Result action_read(uint8_t* input_buffer, FileSystem* fs, DirCursor* current_dir, uint8_t* file_name) {
+	DirEntry file;
+	uint8_t file_name_buffer[FILE_NAME_BUFFER];
+	memset(file_name_buffer, 0, FILE_NAME_BUFFER);
+	strcpy(file_name_buffer, file_name);
+	switch (resolve(fs, current_dir, &file, file_name_buffer)) {
+		case OPTIONAL_OK:
+			break;
+		case OPTIONAL_STRUCTURE_ERROR:
+			printf("File not found.");
+			return 0;
+		case OPTIONAL_IO_ERROR:
+			printf(MESSAGE_IO_ERROR);
+			return 1;
+	}
+	if (is_folder(&file)) {
+		printf("File is a directory.\n");
+		return 0;
+	}
+	FileIO file_io;
+	uint8_t buffer[IO_BUFFER];
+	FileCursor size = get_file_size(fs, &file);
+	FileCursor counter = 0;
+	open_file(fs, &file, &file_io);
+	printf("File contents:%d\n", size);
+	while (counter < size) {
+		size_t to_read = min(IO_BUFFER-1, size - counter);
+		if (read_from_file(fs, &file_io, buffer, to_read)) {
+			printf(MESSAGE_IO_ERROR);
+			return 1;
+		}
+		buffer[to_read] = '\0';
+		printf("%s", buffer);
+		counter += to_read;
+	}
+	if(close_file(fs, &file_io)) {
+		printf(MESSAGE_IO_ERROR);
+		return 1;
 	}
 	return 0;
 }
@@ -593,37 +765,15 @@ int main() {
 	init_table();
 
 	uint8_t inputBuffer[INPUT_BUFFER];
-
 	FileSystem fs;
+
+	if (init_or_mount(inputBuffer, &fs)) {
+		return 1;
+	}
+
 	DirCursor directory_stack[MAX_DEPTH];
 	size_t directory_stack_ptr = 0;
 	uint8_t currentPath[DIR_STRING_BUFFER] = "/";
-
-	printf("Do you wanna to create a file system? [1]\n Or load an existing[2]\n");
-	fgets(inputBuffer, INPUT_BUFFER, stdin);
-	trim_untill_newline(inputBuffer);
-	if (strcmp(inputBuffer, "1") == 0) {
-		printf("Enter a file system name:");
-		fgets(inputBuffer, INPUT_BUFFER, stdin);
-		trim_untill_newline(inputBuffer);
-
-		if (init_fs_file(&fs, inputBuffer, FS_SIZE / CLUSTER_SIZE)) {
-			printf("Can't create FS.");
-			return 1;
-		}
-	} else if (strcmp(inputBuffer, "2") == 0) {
-		printf("Enter a file system name:");
-		fgets(inputBuffer, INPUT_BUFFER, stdin);
-		trim_untill_newline(inputBuffer);
-
-		if (open_fs_file(&fs, inputBuffer)) {
-			printf("Can't open FS.");
-			return 1;
-		}
-	} else {
-		printf("Bad option.");
-		return 1;
-	}
 
 	get_root(&fs, &directory_stack[0]);
 	while (1) {
@@ -639,82 +789,17 @@ int main() {
 		// Записать строку в файл
 		if (strcmp(root_command, "exit") == 0) {
 			break;
+		} else if (strcmp(root_command, "read") == 0) {
+			if(action_read(inputBuffer, &fs, &directory_stack[directory_stack_ptr], after_command)) {
+				break;
+			}
 		} else if (strcmp(root_command, "write") == 0) {
-			uint8_t *pathToFile = after_command;
-			DirEntry file;
-			FileIO fileIo;
-			if(verify_filename(pathToFile)) {
-				printf("Filename is either too long or does contain illegal symbols");
-				continue;
-			}
-			switch (resolve(&fs, &directory_stack[directory_stack_ptr], &file, pathToFile)) {
-				case OPTIONAL_OK:
-					if (is_folder(&file)) {
-						printf("Not a file!");
-						continue;
-					} else {
-						open_file(&fs, &file, &fileIo);
-					}
-					break;
-				case OPTIONAL_STRUCTURE_ERROR:
-					init_meta(&file, 0, pathToFile);
-					create_file(&fs, &directory_stack[directory_stack_ptr], &file);
-					break;
-				case OPTIONAL_IO_ERROR:
-					printf("IO Error");
-					return 1;
-			}
-			while (1) {
-				fgets(inputBuffer, INPUT_BUFFER, stdin);
-				if (inputBuffer[0] == '\n') {
-					break;
-				}
-				switch (write_to_file(&fs, &fileIo, inputBuffer, strlen(inputBuffer))) {
-					case OPTIONAL_OK:
-						break;
-					case OPTIONAL_STRUCTURE_ERROR:
-						printf("Not enough space");
-						break;
-					case OPTIONAL_IO_ERROR:
-						printf("IO Error");
-						return 1;
-				}
-			}
-			if (close_file(&fs, &fileIo)) {
-				printf("IO Error");
-				return 1;
+			if(action_write(inputBuffer, &fs, &directory_stack[directory_stack_ptr], after_command)) {
+				break;
 			}
 		} else if (strcmp(root_command, "mkdir") == 0) {
-			uint8_t* dir_name = after_command;
-			if(verify_filename(dir_name)) {
-				printf("Filename is either too long or does contain illegal symbols");
-				continue;
-			}
-			DirEntry directory;
-			uint8_t name_buffer[FILE_NAME_BUFFER];
-			memset(name_buffer, 0, FILE_NAME_BUFFER);
-			strcpy(name_buffer, dir_name);
-			switch (resolve(&fs, &directory_stack[directory_stack_ptr], &directory, name_buffer)) {
-				case OPTIONAL_OK:
-					printf("File already exists!\n");
-					continue;
-				case OPTIONAL_STRUCTURE_ERROR:
-					break;
-				case OPTIONAL_IO_ERROR:
-					printf("IO Error\n");
-					return 1;
-			}
-			init_meta(&directory, 1, name_buffer);
-			switch (create_file(&fs, &directory_stack[directory_stack_ptr], &directory)) {
-				case OPTIONAL_OK:
-					printf("Folder created\n");
-					break;
-				case OPTIONAL_STRUCTURE_ERROR:
-					printf("Not enough space\n");
-					break;
-				case OPTIONAL_IO_ERROR:
-					printf("IO Error\n");
-					return 1;
+			if(action_mkdir(inputBuffer, &fs, &directory_stack[directory_stack_ptr], after_command)) {
+				break;
 			}
 		} else if (strcmp(root_command, "cd") == 0) {
 			uint8_t* path = after_command;
@@ -762,7 +847,7 @@ int main() {
 							printf("File named %s was not found\n", folder_name);
 							break;
 						case OPTIONAL_IO_ERROR:
-							printf("IO Error");
+							printf(MESSAGE_IO_ERROR);
 							return 1;
 					}
 				}
@@ -775,6 +860,7 @@ int main() {
 			split(internal, &external, ' ');
 			if(verify_filename(internal)) {
 				printf("Filename is either too long or does contain illegal symbols");
+				continue;
 			}
 			strcpy(file_name, internal);
 
@@ -794,7 +880,7 @@ int main() {
 					create_file(&fs, &directory_stack[directory_stack_ptr], &file);
 					break;
 				case OPTIONAL_IO_ERROR:
-					printf("IO Error");
+					printf(MESSAGE_IO_ERROR);
 					return 1;
 			}
 			FILE *external_file = fopen(external, "rb");
@@ -803,14 +889,14 @@ int main() {
 				continue;
 			}
 			if(ferror(external_file)) {
-				printf("IO Error");
+				printf(MESSAGE_IO_ERROR);
 				continue;
 			}
 			while(!feof(external_file)) {
 				uint8_t buffer[IO_BUFFER];
 				size_t read = fread(buffer, 1, IO_BUFFER, external_file);
 				if(ferror(external_file)) {
-					printf("IO Error");
+					printf(MESSAGE_IO_ERROR);
 					break;
 				}
 				switch (write_to_file(&fs, &internal_file, buffer, read)) {
@@ -818,7 +904,7 @@ int main() {
 						printf("Data writing was successful\n");
 						break;
 					case OPTIONAL_STRUCTURE_ERROR:
-						printf("Not enough space");
+						printf(MESSAGE_OUT_OF_SPACE);
 						goto exit_loop1;
 				}
 			}
@@ -826,37 +912,6 @@ int main() {
 			close_file(&fs, &internal_file);
 
 			fclose(external_file);
-		} else if (strcmp(root_command, "read") == 0) {
-			uint8_t *file_name = after_command;
-
-			DirEntry file;
-			switch (resolve(&fs, &directory_stack[directory_stack_ptr], &file, file_name)) {
-				case OPTIONAL_OK:
-					break;
-				case OPTIONAL_STRUCTURE_ERROR:
-					printf("File not found.");
-					continue;
-				case OPTIONAL_IO_ERROR:
-					printf("IO error");
-					return 1;
-			}
-			FileIO fileIo;
-			uint8_t buffer[IO_BUFFER];
-			FileCursor size = get_file_size(&fs, &file);
-			FileCursor counter = 0;
-			open_file(&fs, &file, &fileIo);
-			printf("File contents:\n");
-			while (counter < size) {
-				read_from_file(&fs, &fileIo, buffer, IO_BUFFER-1);
-				size_t remaining = min(IO_BUFFER-1, size - counter);
-				buffer[remaining] = '\0';
-				printf("%s", buffer);
-				counter += IO_BUFFER-1;
-			}
-			if(close_file(&fs, &fileIo)) {
-				printf("IO error");
-				return 1;
-			}
 		} else if (strcmp(root_command, "export") == 0) {
 			uint8_t *dst;
 			uint8_t *src = after_command;
@@ -872,10 +927,10 @@ int main() {
 				case OPTIONAL_OK:
 					break;
 				case OPTIONAL_STRUCTURE_ERROR:
-					printf("Not enough space");
+					printf(MESSAGE_OUT_OF_SPACE);
 					continue;
 				case OPTIONAL_IO_ERROR:
-					printf("IO error");
+					printf(MESSAGE_IO_ERROR);
 					return 1;
 			}
 			FILE *external_file = fopen(dst, "wb");
@@ -908,6 +963,10 @@ int main() {
 				}
 			}
 		}
+	}
+	if(close_fs_file(&fs)) {
+		printf(MESSAGE_IO_ERROR);
+		return 1;
 	}
 	return 0;
 }
