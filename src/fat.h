@@ -1,3 +1,5 @@
+#pragma once
+
 #include <stdlib.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -21,7 +23,7 @@ enum {
 	OFFSET_SIZE = 0,
 	OFFSET_CLUSTER = sizeof(ClusterOffset),
 	OFFSET_NAME = sizeof(ClusterOffset) + sizeof(ClusterLocation),
-	MAX_FILE_NAME = FILE_META - OFFSET_NAME,
+	MAX_FILE_NAME = FILE_META - OFFSET_NAME - 1,
 	FILES_PER_CLUSTER = CLUSTER_SIZE / FILE_META,
 
 	TV_EMPTY = 0x0000,
@@ -60,8 +62,9 @@ typedef struct {
 } DirEntry;
 
 typedef struct {
-	ClusterLocation current_cluster;
-	uint8_t next_folder;
+    ClusterLocation current_cluster;
+	ClusterLocation current_offset;
+	uint8_t buffer[CLUSTER_SIZE];
 } DirIter;
 
 typedef struct {
@@ -75,6 +78,8 @@ typedef struct {
 uint8_t is_folder(DirEntry* entry);
 
 FileCursor get_file_size(FileSystem* fs, DirEntry* entry);
+
+uint8_t* get_file_name(DirEntry* restrict entry);
 
 // TODO: name должен быть padded
 void init_meta(DirEntry* entry, uint8_t is_folder, uint8_t* name);
@@ -90,7 +95,9 @@ OptionalResult resolve(FileSystem* fs, DirCursor* current, DirEntry* result, uin
 
 OptionalResult create_file(FileSystem* fs, DirCursor* current, DirEntry* target);
 
-Result open_file(FileSystem* fs, DirEntry* entry, FileIO* result);
+void open_file(FileSystem* fs, DirEntry* entry, FileIO* result);
+
+void open_dir(FileSystem* fs, DirEntry* entry, DirCursor* result);
 
 // TODO: buffer?
 OptionalResult set_length(FileSystem* fs, FileIO* file, FileCursor length);
@@ -99,9 +106,13 @@ OptionalResult set_length(FileSystem* fs, FileIO* file, FileCursor length);
 OptionalResult seek(FileSystem* fs, FileIO* file, FileCursor location);
 
 // TODO: buffer?
-void write_to_file(FileSystem* fs, FileIO* file, FileCursor location, uint8_t* buffer, size_t size);
+OptionalResult write_to_file(FileSystem* fs, FileIO* file, FileCursor location, uint8_t* buffer, size_t size);
 
 // TODO: buffer?
 OptionalResult read_from_file(FileSystem* fs, FileIO* file, FileCursor location, uint8_t* buffer, size_t size);
+
+void dir_iter(FileSystem* fs, DirCursor* current, DirIter* iter);
+
+OptionalResult dir_iter_next(FileSystem* fs, DirIter* iter, DirEntry* next);
 
 Result close_file(FileSystem* fs, FileIO* file);
