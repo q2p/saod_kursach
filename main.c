@@ -182,7 +182,7 @@ Result init_fs_file(FileSystem* fs, char* path, uint16_t clusters_count) {
 	uint8_t root[CLUSTER_SIZE];
 	memset(root, 0, CLUSTER_SIZE);
 
-	fs->file = fopen("new_fs", "wb+");
+	fs->file = fopen(path, "wb+");
 
 	if(fs->file == NULL) {
 		return 1;
