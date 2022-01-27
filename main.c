@@ -560,16 +560,6 @@ void trim_untill_newline(uint8_t *string) {
 	}
 }
 
-void trim_untill_slash(uint8_t *string) {
-	while(*string) {
-		if (*string == '/') {
-			*string = '\0';
-			break;
-		}
-		string++;
-	}
-}
-
 Result verify_filename(uint8_t* filename) {
 	size_t len = strlen(filename);
 	// TODO: forbid ..
@@ -979,7 +969,7 @@ int main() {
 							break;
 						case OPTIONAL_STRUCTURE_ERROR:
 							printf(MESSAGE_NOT_FOUND);
-							break;
+							goto exit_loop;
 						case OPTIONAL_IO_ERROR:
 							printf(MESSAGE_IO_ERROR);
 							return 1;
