@@ -37,6 +37,12 @@ enum {
 	OPTIONAL_OK = 0,
 	OPTIONAL_IO_ERROR = 1,
 	OPTIONAL_STRUCTURE_ERROR = 2,
+
+	INPUT_BUFFER = 4096,
+	MAX_DEPTH = 256,
+	FS_SIZE = 16*1024*1024,
+	IO_BUFFER = 4096,
+	DIR_STRING_BUFFER = 16*1024
 };
 
 _STATIC_ASSERT(sizeof(uint8_t) == 1);
@@ -77,8 +83,19 @@ typedef struct {
 	FileCursor metaFileSizeLocation;
 } FileIO;
 
+const uint8_t* MESSAGE_IO_ERROR = "I/O Error has occured.\n";
+const uint8_t* MESSAGE_OUT_OF_SPACE = "Not enough space.\n";
+const uint8_t* MESSAGE_NOT_FOUND = "File not found.\n";
+const uint8_t* MESSAGE_IS_DIR = "File is a directory.\n";
+const uint8_t* MESSAGE_IS_NOT_DIR = "File is not a directory.\n";
+const uint8_t* MESSAGE_FILE_ALREADY_EXISTS = "File already exists.\n";
+const uint8_t* MESSAGE_FILENAME_IS_LONG = "Filename is too long.\n";
+const uint8_t* MESSAGE_FILENAME_ILLEGAL_SYMBOLS = "Filename contains illegal symbols.\n";
+const uint8_t* MESSAGE_FS_CANT_INIT = "Can't init the file system.\n";
+const uint8_t* MESSAGE_FS_CANT_MOUNT = "Can't mount the file system.\n";
+const uint8_t* MESSAGE_UNKNOWN_COMMAND = "Unknown command.\n";
 
-// TODO: поставить ferror, где забыл
+uint8_t LUT[256];
 
 void read(FileSystem* fs, ClusterLocation cluster, uint8_t* buffer) {
 	fseek(fs->file, ROOT_OFFSET + cluster * CLUSTER_SIZE, SEEK_SET);
@@ -498,26 +515,6 @@ OptionalResult dir_iter_next(FileSystem* fs, DirIter* iter, DirEntry* next) {
 	return OPTIONAL_OK;
 }
 
-/*
-file
-dir {
-	file_iter
-		[file_idx, first_cluster, current_cluster]
-		next_file
-	open_dir
-	open_file
-	prev_dir
-	make_file
-	delete_file
-}
-file {
-	[parent_dir, length, first_cluster, current_cluster, current_position]
-	seek
-	read_bytes
-	write_bytes
-}
-*/
-
 Result close_fs_file(FileSystem* fs) {
 	fseek(fs->file, 0, SEEK_SET);
 	fwrite(fs->table_cache, 1, sizeof(fs->table_cache), fs->file);
@@ -525,11 +522,6 @@ Result close_fs_file(FileSystem* fs) {
 	fclose(fs->file);
 	return ferror(fs->file);
 }
-
-void rem_dir();
-void rem_file();
-
-uint8_t LUT[256];
 
 void string_to_lower(uint8_t *string) {
 	for(uint8_t *p = string; *p; ++p)
@@ -577,27 +569,6 @@ void trim_untill_slash(uint8_t *string) {
 		string++;
 	}
 }
-
-enum {
-	INPUT_BUFFER = 4096,
-	MAX_DEPTH = 256,
-	FS_SIZE = 16*1024*1024,
-	IO_BUFFER = 4096,
-	DIR_STRING_BUFFER = 16*1024
-};
-
-const uint8_t* MESSAGE_IO_ERROR = "I/O Error has occured.\n";
-const uint8_t* MESSAGE_OUT_OF_SPACE = "Not enough space.\n";
-const uint8_t* MESSAGE_NOT_FOUND = "File not found.\n";
-const uint8_t* MESSAGE_IS_DIR = "File is a directory.\n";
-const uint8_t* MESSAGE_IS_NOT_DIR = "File is not a directory.\n";
-const uint8_t* MESSAGE_IS_NOT_FILE = "Not a file.\n";
-const uint8_t* MESSAGE_FILE_ALREADY_EXISTS = "File already exists.\n";
-const uint8_t* MESSAGE_FILENAME_IS_LONG = "Filename is too long.\n";
-const uint8_t* MESSAGE_FILENAME_ILLEGAL_SYMBOLS = "Filename contain illegal symbols.\n";
-const uint8_t* MESSAGE_FS_CANT_INIT = "Can't init FS.\n";
-const uint8_t* MESSAGE_FS_CANT_MOUNT = "Can't mount FS.\n";
-const uint8_t* MESSAGE_UNKNOWN_COMMAND = "Unknown command.\n";
 
 Result verify_filename(uint8_t* filename) {
 	size_t len = strlen(filename);
@@ -864,7 +835,7 @@ Result action_import(FileSystem* fs, DirCursor* current_dir, uint8_t* after_comm
 	switch (resolve(fs, current_dir, &file, file_name)) {
 		case OPTIONAL_OK:
 			if (is_folder(&file)) {
-				printf(MESSAGE_IS_NOT_FILE);
+				printf(MESSAGE_IS_DIR);
 				return 0;
 			}
 			break;
